@@ -55,7 +55,7 @@ blotter agrees. Unsupported market/native protection types are explicit in UI.
 
 ## Next — strictly sequential
 
-Current item: **2, multi-chart layouts**. Phase 1 acceptance passed on the isolated
+Current item: **3, backend watchlist**. Item 2 passed source and isolated browser checks. Phase 1 acceptance passed on the isolated
 8002 server in Chrome; production 3000/8001 has not been restarted or changed.
 
 2. Multi-chart layouts (wrong version: costs redone work). 1/2/3/4/6 chart variants,
@@ -93,7 +93,7 @@ Current item: **2, multi-chart layouts**. Phase 1 acceptance passed on the isola
 
 Read this file, current git diff and scoped checkpoint; preserve prior work.
 Recover actual agent/file results rather than assuming a completion message.
-Finish item 1's missing gate before item 2. Update this file before starting every
+Continue item 3 from its scoped checkpoint; finish its persistence/browser gate before item 4. Update this file before starting every
 item and after substantial sub-steps; update learning_log.md each execution.
 
 ## Verification and commits
@@ -124,3 +124,51 @@ Resume fixture: `.venv/Scripts/python tests/manual/chart_terminal_fixture.py
 Frontend fixture build uses only per-command REACT_APP_BACKEND_URL and BUILD_PATH.
 Fixture is memory-only, synthetic quotes, forbidden live gateway. Normal app
 rollout and market-hours acceptance remain separate.
+
+### 2026-11-04 resume — item 2 final gate
+
+Recovered source and checkpoints; phase 1 commits remain 9894d7d/398a955.
+Item 2 grouped picker has 17 variants. Previous Chrome pass found no overlapping
+or empty tile slots in any variant; 1m crosshair at 18:54 mapped to the containing
+5m candle at 18:50, and symbol sync/active chart changes were observed. Shared SSE
+test run on resume: 28 Python tests passed; five focused frontend suites: 26 passed.
+Root removed offscreen unmounting after observing placeholder height shrinkage;
+only tiles omitted by the selected layout unmount. Compact multi-chart styling
+added. User additionally requested full-layout maximize with stock search kept
+available: implemented on the entire terminal root, including confirmation panel,
+with a focused fullscreen test. Final fixture build/browser and restart persistence
+check pending. Production services remain unchanged. Later items not started.
+
+Item 2 final review: root Chrome loop checked all 17 picker variants, expected
+counts and nonempty/nonoverlapping bounds. Maximized search changed only tile 5
+with symbol sync off; other symbols/timeframes stayed unchanged. Added fallback
+window maximize for denied Fullscreen API, Esc/Restore, compact tools disclosure,
+and kept the shared confirmation panel in the maximized root. Individual canvas
+fullscreen is suppressed in the terminal to prevent hidden trade confirmations.
+Review reproduced a failed channel stranded behind healthy SSE siblings; added
+per-channel capped retry, recovery resync and cancellation tests. Root rerun:
+33 selected Python tests and 29 selected React tests passed. Fixed synchronized
+cursor clearing on mouse leave with a regression. Final fixture rebuild/restart
+check still pending; do not begin item 3 until it passes.
+
+### Item 2 complete / item 3 starting — 2026-11-04
+
+Final isolated production build compiled. After stopping and starting the fixture
+server, Chrome reload retained six-grid, active tile 5, chart 2 at 5m, other charts
+at 1m, independent selected instrument and sync flags. Full-layout maximize and
+Restore were observed. A synthetic RELIANCE search changed active tile 5 only;
+other five symbols remained BANKNIFTY. Six canvases rendered without overlap.
+On small displays dense row/column variants scroll to preserve readable charts.
+The Fullscreen API can be rejected by browser focus/permissions; the tested
+window-maximize fallback and Esc remain available. No production restart.
+
+Item 3 plan (cost: redone work):
+1. Backend persisted watchlist with validated instrument identity and revision
+   checks; pass add/rename/reorder/delete reload from a fresh store instance.
+2. Left panel and cached fresh quote polling using existing feed ownership; pass
+   edits save on server, stale/offline values are marked and click loads active tile.
+3. Root integration/browser acceptance plus isolated persistent Mongo restart;
+   production start-app.bat acceptance deferred to final rollout exposure check.
+Delegation: backend agent owns service/router/tests; UI agent owns component/API/
+unit tests. Root owns integration, fixture, review, persistence and commits.
+Do not start option-chain work before this gate. No broker writes.

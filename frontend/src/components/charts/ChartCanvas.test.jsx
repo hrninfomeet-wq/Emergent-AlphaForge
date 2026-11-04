@@ -1,6 +1,6 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
-import ChartCanvas from "./ChartCanvas";
+import ChartCanvas, { crosshairTarget } from "./ChartCanvas";
 import { INDEX_SHORTCUTS, readDrawingEnvelope, saveDrawingEnvelope } from "./chartPresentation";
 
 const mockCharts = [], mockManagers = [];
@@ -79,4 +79,26 @@ test("drawing style edits affect the selected drawing, save it, and leave other 
   expect(saved[1].style).toMatchObject({ color: "#3b82f6", width: 2 });
   expect(saved[0].anchors).toEqual(rows[0].points);
   for (const label of ["Arrow", "Ray", "Horizontal ray", "Vertical line", "Ruler (price and time)"]) expect(container.querySelector(`[aria-label="${label}"]`)).not.toBeNull();
+});
+
+test("crosshair synchronization uses the containing target interval without extending past loaded bars", () => {
+ const target = [{ time: 100, close: 10 }, { time: 400, close: 11 }];
+ expect(crosshairTarget(target, 220, "5m")).toEqual(target[0]);
+ expect(crosshairTarget(target, 400, "5m")).toEqual(target[1]);
+ expect(crosshairTarget(target, 700, "5m")).toBeNull();
+ expect(crosshairTarget(target, 99, "5m")).toBeNull();
+});
+
+test("mouse leave clears synchronized cursors without relaying programmatic clears", async () => {
+ const onCrosshair = jest.fn(), onRuntime = jest.fn();
+ await render({onCrosshair, onRuntime});
+ const callback = mockCharts[0].subscribeCrosshairMove.mock.calls[0][0];
+ await act(async () => callback({time:bars[0].time, seriesData:new Map(), sourceEvent:{}}));
+ expect(onCrosshair).toHaveBeenLastCalledWith(bars[0].time);
+ await act(async () => callback({time:undefined, seriesData:new Map()}));
+ expect(onCrosshair).toHaveBeenLastCalledWith(null);
+ onCrosshair.mockClear();
+ mockCharts[0].clearCrosshairPosition = jest.fn(() => callback({time:undefined, seriesData:new Map()}));
+ await act(async () => onRuntime.mock.calls[0][0].setCrosshair(null));
+ expect(onCrosshair).not.toHaveBeenCalled();
 });

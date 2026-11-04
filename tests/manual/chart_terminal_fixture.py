@@ -56,6 +56,7 @@ from app.conditional.broker import PaperGateway
 from app.conditional.engine import ConditionalEngine
 from app.conditional.chart import chart_row
 from app.routers.conditional_orders import api as conditional_router
+from app.chart_stream import parse_chart_channels
 
 NOTICE = 'SYNTHETIC PAPER TEST — isolated fixture; no broker or database.'
 OPTION = {'instrument_key': 'NSE_FO|999', 'symbol': 'SYNTHETIC PAPER TEST NIFTY 25000 CE',
@@ -63,7 +64,12 @@ OPTION = {'instrument_key': 'NSE_FO|999', 'symbol': 'SYNTHETIC PAPER TEST NIFTY 
           'expiry': '2026-10-27', 'strike': 25000, 'option_type': 'CE', 'volume_available': True}
 INDEX = {'instrument_key': 'NSE_INDEX|Nifty 50', 'symbol': 'NIFTY', 'name': NOTICE,
          'kind': 'index', 'exchange': 'NSE', 'segment': 'NSE_INDEX', 'volume_available': False}
-INSTRUMENTS = [INDEX, OPTION]
+BANK_INDEX = {**INDEX, 'instrument_key': 'NSE_INDEX|Nifty Bank', 'symbol': 'BANKNIFTY'}
+SENSEX_INDEX = {**INDEX, 'instrument_key': 'BSE_INDEX|SENSEX', 'symbol': 'SENSEX',
+                'exchange': 'BSE', 'segment': 'BSE_INDEX'}
+EQUITY = {**INDEX, 'instrument_key': 'NSE_EQ|SYNTHETIC_RELIANCE', 'symbol': 'RELIANCE',
+          'kind': 'equity', 'segment': 'NSE_EQ', 'volume_available': True}
+INSTRUMENTS = [INDEX, BANK_INDEX, SENSEX_INDEX, OPTION, EQUITY]
 
 class FixtureClock(Clock):
     # Advance between cycles only: snapshot timestamps cannot run microscopically
@@ -138,10 +144,15 @@ def get_instrument(key):
 
 def frame_seconds(frame):
     return {'1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800,
-            '1h': 3600, '1d': 86400}.get(frame, 60)
+            '1h': 3600, '1d': 86400, '1w': 604800}.get(frame, 60)
+
+def fixture_price(key):
+    if key == OPTION['instrument_key']:
+        return market.premium
+    return market.spot * {'NSE_INDEX|Nifty 50': 1, 'NSE_INDEX|Nifty Bank': 2, 'BSE_INDEX|SENSEX': 3}.get(key, 1)
 
 def bar(key, frame, stamp, n=0):
-    price = market.premium if key == OPTION['instrument_key'] else market.spot
+    price = fixture_price(key)
     opened = price + 2 * math.sin(n / 12)
     close = price + 2 * math.sin((n + 1) / 12)
     return {'time': int(stamp), 'open': opened, 'high': max(opened, close) + 1,
@@ -168,17 +179,32 @@ async def positions(instrument_key: str):
 @app.get('/api/charts/stream')
 async def stream(instrument_key: str, timeframe: str = '1m'):
     get_instrument(instrument_key)
+    return fixture_stream([{'instrument_key': instrument_key, 'timeframe': timeframe}])
+
+@app.get('/api/charts/streams')
+async def streams(channels: str):
+    try:
+        selected = parse_chart_channels(channels)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    for channel in selected:
+        get_instrument(channel['instrument_key'])
+    return fixture_stream(selected)
+
+def fixture_stream(channels):
     async def events():
         while True:
             now = time.time()
-            price = market.premium if instrument_key == OPTION['instrument_key'] else market.spot
-            payload = {'instrument_key': instrument_key, 'timeframe': timeframe, 'connected': True,
-                       'status': 'live', 'source': 'synthetic_ui_fixture', 'warnings': [NOTICE],
-                       'emitted_at_ms': int(now * 1000), 'last_tick_age_ms': 0,
-                       'tick': {'last_price': price, 'close_price': price - 1,
-                                'ts': int(now * 1000), 'ingest_ts': int(now * 1000)},
-                       'bar': bar(instrument_key, timeframe, int(now) // frame_seconds(timeframe) * frame_seconds(timeframe), 0)}
-            yield 'event: snapshot\ndata: ' + json.dumps(payload) + '\n\n'
+            for channel in channels:
+                instrument_key, timeframe = channel['instrument_key'], channel['timeframe']
+                price = fixture_price(instrument_key)
+                payload = {'instrument_key': instrument_key, 'timeframe': timeframe, 'connected': True,
+                           'status': 'live', 'source': 'synthetic_ui_fixture', 'warnings': [NOTICE],
+                           'emitted_at_ms': int(now * 1000), 'last_tick_age_ms': 0,
+                           'tick': {'last_price': price, 'close_price': price - 1,
+                                    'ts': int(now * 1000), 'ingest_ts': int(now * 1000)},
+                           'bar': bar(instrument_key, timeframe, int(now) // frame_seconds(timeframe) * frame_seconds(timeframe), 0)}
+                yield 'event: snapshot\ndata: ' + json.dumps(payload) + '\n\n'
             await asyncio.sleep(1)
     return StreamingResponse(events(), media_type='text/event-stream', headers={'Cache-Control': 'no-store'})
 

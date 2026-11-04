@@ -4,7 +4,7 @@ from fastapi.responses import StreamingResponse
 
 from app.chart_data import get_chart_data_service
 from app.chart_positions import chart_positions
-from app.chart_stream import chart_event_stream
+from app.chart_stream import chart_event_stream, chart_multi_event_stream, parse_chart_channels
 from app.tick_stream import SSE_HEADERS
 
 api = APIRouter(prefix="/charts", tags=["charts"])
@@ -54,3 +54,28 @@ async def stream(request: Request, instrument_key: str = Query(..., max_length=2
 @api.get("/positions")
 async def positions(instrument_key: str = Query(..., max_length=200)):
     return await chart_positions(await _instrument(instrument_key))
+
+
+@api.get("/streams")
+async def streams(request: Request, channels: str = Query(..., max_length=12000)):
+    try:
+        selected = parse_chart_channels(channels)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    resolved, errors = [], []
+    for channel in selected:
+        try:
+            resolved.append((await _instrument(channel["instrument_key"]), channel["timeframe"]))
+        except HTTPException as exc:
+            # A saved/expired instrument cannot disable the other visible charts.
+            errors.append({**channel, "warnings": [str(exc.detail)]})
+    manager = None
+    if resolved:
+        from app.runtime import upstox_stream_manager
+        manager = upstox_stream_manager
+    service = get_chart_data_service()
+    return StreamingResponse(chart_multi_event_stream(
+        manager=manager, channels=resolved, history_loader=service.history,
+        is_disconnected=request.is_disconnected, history_peek=service.peek_history,
+        initial_errors=errors,
+    ), media_type="text/event-stream", headers=SSE_HEADERS)

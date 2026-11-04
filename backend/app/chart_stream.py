@@ -6,9 +6,117 @@ volume. Every queued tick updates extrema before SSE payloads are coalesced.
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import time
 from app.tick_stream import sse_frame
+
+_CHANNEL_RETRY_INITIAL_S = 1.0
+_CHANNEL_RETRY_MAX_S = 30.0
+
+
+def parse_chart_channels(raw):
+    """Validate the entire subscription before any feed leases are acquired."""
+    from app.chart_data import TIMEFRAME_SECONDS
+    try:
+        channels = json.loads(raw)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("channels must be a JSON array") from exc
+    if not isinstance(channels, list) or not channels:
+        raise ValueError("channels must be a nonempty JSON array")
+    distinct = {}
+    for channel in channels:
+        if not isinstance(channel, dict) or set(channel) != {"instrument_key", "timeframe"}:
+            raise ValueError("Each channel requires instrument_key and timeframe")
+        key, timeframe = channel["instrument_key"], channel["timeframe"]
+        if not isinstance(key, str) or not key.strip() or len(key) > 200:
+            raise ValueError("instrument_key must contain 1 to 200 characters")
+        if not isinstance(timeframe, str) or timeframe not in TIMEFRAME_SECONDS:
+            raise ValueError("Unsupported chart timeframe")
+        distinct[(key, timeframe)] = {"instrument_key": key, "timeframe": timeframe}
+        if len(distinct) > 6:
+            raise ValueError("At most six distinct chart channels are supported")
+    return list(distinct.values())
+
+
+async def chart_multi_event_stream(*, manager, channels, history_loader, is_disconnected,
+                                   history_peek=None, max_queue=64, initial_errors=()):
+    """Merge channel generators without dropping candle extrema or resync frames.
+
+    Backpressure is confined to these chart consumers. The manager's independent
+    bounded tick queues never block the market feed; their existing overflow
+    handling emits a resync and reseeds historical extrema before more candles.
+    Only this parent reads the ASGI disconnect receiver.
+    """
+    queue = asyncio.Queue(maxsize=max(1, max_queue))
+    stopped = asyncio.Event()
+    remaining = len(channels)
+
+    async def disconnected():
+        return stopped.is_set()
+
+    async def pump(instrument, timeframe):
+        nonlocal remaining
+        retry_delay = _CHANNEL_RETRY_INITIAL_S
+        restarting = False
+        try:
+            while not stopped.is_set():
+                source = chart_event_stream(manager=manager, instrument=instrument, timeframe=timeframe,
+                                            history_loader=history_loader, is_disconnected=disconnected,
+                                            history_peek=history_peek)
+                failed = False
+                try:
+                    async for event in source:
+                        if event.startswith("event: stream_error\n"):
+                            failed = True
+                        else:
+                            retry_delay = _CHANNEL_RETRY_INITIAL_S
+                            if restarting:
+                                await queue.put(sse_frame("resync", {
+                                    "instrument_key": instrument["instrument_key"], "timeframe": timeframe,
+                                    "reason": "channel_recovered"}))
+                                restarting = False
+                        await queue.put(event)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    failed = True
+                    await queue.put(sse_frame("stream_error", {
+                        "instrument_key": instrument["instrument_key"], "timeframe": timeframe,
+                        "status": "disconnected", "connected": False,
+                        "warnings": ["Live chart updates are unavailable. Historical candles remain available."],
+                        "emitted_at_ms": int(time.time() * 1000)}))
+                finally:
+                    # Finish releasing the old lease before creating a replacement.
+                    await source.aclose()
+                if not failed:
+                    break
+                # A healthy sibling keeps the HTTP connection open, so retry the
+                # failed channel here rather than relying on EventSource reconnect.
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(_CHANNEL_RETRY_MAX_S, retry_delay * 2)
+                restarting = True
+        finally:
+            remaining -= 1
+
+    for payload in initial_errors:
+        yield sse_frame("stream_error", {**payload, "status": "disconnected", "connected": False,
+                                         "emitted_at_ms": int(time.time() * 1000)})
+    tasks = [asyncio.create_task(pump(instrument, timeframe)) for instrument, timeframe in channels]
+    try:
+        while remaining or not queue.empty():
+            if await is_disconnected():
+                break
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=.25)
+            except asyncio.TimeoutError:
+                continue
+            yield event
+    finally:
+        stopped.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def finite(value):

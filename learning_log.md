@@ -1822,3 +1822,17 @@ Core lesson: a drag is a proposal, not broker acceptance. Keep amendments on the
 Confirmed approaches: shared ConditionalEngine/PaperGateway; strict instrument/mode identity; mocked live adapter checks; Chrome on isolated synthetic port 8002. Focused checks: 41 Python and 23 React tests; production build; paper fill/P&L, confirmed stop drag, limit cancellation and blotter agreement. Backend sub-step commit 9894d7d; root PROGRESS.md is the upgrade checkpoint.
 
 Dead ends: a continuously advancing fake clock can make snapshot timestamps slightly later than the cycle timestamp, falsely triggering stale-feed handling. Advance virtual time between cycles. Use bytes when applying a selected git diff hunk on Windows; text-mode stdin changes line endings. Do not copy BUY entry fields into a SELL close confirmation. No real broker actions or production restart.
+
+## 2026-11-04 — Multi-chart transport and maximize
+
+Core lesson: a shared stream needs per-channel recovery, not just failure isolation.
+Confirmed approaches: bounded multiplexing preserves extrema and releases leases;
+failed channels close then retry with capped backoff and recovery resync. Root's
+33 backend checks passed. Chrome verified all 17 layouts and restart persistence;
+29 focused React checks covered context, storage, streams and cursor clearing.
+Keep only selected-layout tiles mounted: offscreen placeholder unmounting caused
+scroll-height jumps. Keep the whole workspace, including order confirmations, in
+fullscreen; retain a window-maximize fallback when the browser refuses the API.
+Dead ends: relying on EventSource reconnect for one failed producer; leaving
+individual-canvas fullscreen able to hide the shared confirmation panel; starting
+the fixture while CRA is rebuilding/removing its index.html.

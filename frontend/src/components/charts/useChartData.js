@@ -9,13 +9,15 @@ const empty = (identity) => ({ identity, loading: true, bars: [], instrument: nu
 const warnings = (values) => Array.isArray(values) ? values.filter((value) => typeof value === "string") : [];
 const observedAt = (value) => typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.min(Date.now(), value) : Date.now();
 
-export default function useChartData(instrument, timeframe) {
+export default function useChartData(instrument, timeframe, { positionsEnabled = true } = {}) {
   const key = instrument?.instrument_key;
   const contractIdentity = JSON.stringify(instrumentIdentity(instrument || {}));
   const identity = `${key}|${contractIdentity}|${timeframe}`;
   const [state, setState] = useState(() => empty(identity));
   const generation = useRef(0);
   const actions = useRef({});
+  const positionsAllowed = useRef(positionsEnabled);
+  positionsAllowed.current = positionsEnabled;
 
   useEffect(() => {
     const current = ++generation.current;
@@ -86,7 +88,7 @@ export default function useChartData(instrument, timeframe) {
     };
 
     const refreshPositions = async () => {
-      if (!key || !active() || positionsBusy || identityRejected) return;
+      if (!positionsAllowed.current || !key || !active() || positionsBusy || identityRejected) return;
       positionsBusy = true;
       const request = controller();
       try {
@@ -163,7 +165,7 @@ export default function useChartData(instrument, timeframe) {
       }
     };
 
-    actions.current = { refresh: () => { refreshHistory(); refreshPositions(); }, loadOlder };
+    actions.current = { refresh: () => { refreshHistory(); refreshPositions(); }, refreshPositions, loadOlder };
     if (key) {
       refreshHistory(true).finally(connect);
       refreshPositions();
@@ -179,6 +181,10 @@ export default function useChartData(instrument, timeframe) {
       actions.current = {};
     };
   }, [identity, key, timeframe, contractIdentity]);
+
+  useEffect(() => {
+    if (positionsEnabled) actions.current.refreshPositions?.();
+  }, [positionsEnabled]);
 
   const refresh = useCallback(() => actions.current.refresh?.(), []);
   const loadOlder = useCallback(() => actions.current.loadOlder?.(), []);

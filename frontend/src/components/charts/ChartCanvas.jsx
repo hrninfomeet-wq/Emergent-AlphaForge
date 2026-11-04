@@ -34,13 +34,27 @@ const chartTime = (time) => {
   return timeText(stamp);
 };
 
+// Match a source time to the target candle interval without projecting beyond loaded data.
+export function crosshairTarget(bars, time, timeframe) {
+  if (typeof time !== "number") return bars.find(bar => bar.time === time) || null;
+  const durations = { "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "1d": 86400, "1w": 604800 };
+  const duration = durations[timeframe];
+  if (!duration) return null;
+  let lo = 0, hi = bars.length - 1, candidate = null;
+  while (lo <= hi) { const mid = Math.floor((lo + hi) / 2); if (bars[mid].time <= time) { candidate = bars[mid]; lo = mid + 1; } else hi = mid - 1; }
+  return candidate && time < candidate.time + duration ? candidate : null;
+}
+
 /** Owns the imperative chart. A keyed page instance separates every contract
  * and timeframe; durable drawings are shared only by full contract identity. */
 export default function ChartCanvas({ instrument, timeframe, bars, configs, volumeAvailable, positions,
-  positionsAt, now, loading, loadingOlder, hasMore, loadOlder, error, tradingRows = [], onOrderChange, tradingDisabled = false }) {
+  positionsAt, now, loading, loadingOlder, hasMore, loadOlder, error, tradingRows = [], onOrderChange, tradingDisabled = false, onRuntime, onCrosshair, showFullscreenControl = true }) {
   const host = useRef(null);
   const surface = useRef(null);
   const runtime = useRef(null);
+  const syncCallbacks = useRef({ onRuntime, onCrosshair });
+  syncCallbacks.current = { onRuntime, onCrosshair };
+  const syncing = useRef(false);
   const latest = useRef({ bars, loadOlder, hasMore, loadingOlder });
   latest.current = { bars, loadOlder, hasMore, loadingOlder };
   const [hover, setHover] = useState(null);
@@ -111,7 +125,12 @@ export default function ChartCanvas({ instrument, timeframe, bars, configs, volu
         setSelection([...ids]);
         setSelectedStyle(ids.length ? manager.get(ids[0])?.style || null : null);
       }), manager.on("visibility", (visible) => setHidden(!visible)));
-      const crosshair = (event) => setHover(event.time ? event.seriesData.get(candles) || null : null);
+      const crosshair = (event) => {
+        setHover(event.time ? event.seriesData.get(candles) || null : null);
+        // Mouse leave has no sourceEvent. Clear sibling cursors too; the runtime
+        // guard below prevents programmatic clears from bouncing between tiles.
+        if (!syncing.current && (event.sourceEvent || event.time == null)) syncCallbacks.current.onCrosshair?.(event.time ?? null);
+      };
       chart.subscribeCrosshairMove(crosshair);
       disposers.push(() => chart.unsubscribeCrosshairMove(crosshair));
       const rangeChanged = (range) => {
@@ -126,11 +145,20 @@ export default function ChartCanvas({ instrument, timeframe, bars, configs, volu
       else { resizeFallback = fitSize; window.addEventListener("resize", fitSize); }
       runtime.current = { chart, candles, manager, indicators: new Map(), priceLines: [], initialized: false, firstTime: null };
       setOrderRuntime({ chart, series: candles });
+      syncCallbacks.current.onRuntime?.({ setCrosshair(time) {
+        syncing.current = true;
+        try {
+          const bar = crosshairTarget(latest.current.bars, time, timeframe);
+          if (bar) chart.setCrosshairPosition(bar.close, bar.time, candles);
+          else chart.clearCrosshairPosition();
+        } finally { syncing.current = false; }
+      } });
     } catch {
       setRenderError("The chart could not start in this browser. Reload the page or use a current desktop browser.");
     }
     return () => {
       disposed = true;
+      syncCallbacks.current.onRuntime?.(null);
       resize?.disconnect();
       if (resizeFallback) window.removeEventListener("resize", resizeFallback);
       disposers.forEach((dispose) => dispose());
@@ -238,7 +266,7 @@ export default function ChartCanvas({ instrument, timeframe, bars, configs, volu
       <span className="chart-drawing-hint">{tool ? `${ONE_CLICK_TOOLS.has(tool) ? "Click to place" : "Click start, then end"} · Esc to cancel` : `${drawingCount} saved drawing${drawingCount === 1 ? "" : "s"}`}</span>
       <div className="chart-tools chart-tools-end">
         <button type="button" onClick={() => runtime.current?.chart.timeScale().fitContent()} aria-label="Fit all candles" title="Fit all candles"><ScanLine size={16} /></button>
-        <button type="button" onClick={toggleFullscreen} aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen chart"} title="Fullscreen chart">{fullscreen ? <Minimize size={16} /> : <Maximize size={16} />}</button>
+        {showFullscreenControl && <button type="button" onClick={toggleFullscreen} aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen chart"} title="Fullscreen chart">{fullscreen ? <Minimize size={16} /> : <Maximize size={16} />}</button>}
       </div>
     </div>
     <div className="chart-drawing-style" role="group" aria-label="Drawing style">

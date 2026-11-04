@@ -10,7 +10,7 @@ const a = INDEX_SHORTCUTS[0], b = INDEX_SHORTCUTS[1];
 const bar = (time, close = 100, volume = 40) => ({ time, open: close, high: close + 1, low: close - 1, close, volume });
 const history = (instrument = a, timeframe = "1m", bars = [bar(100)]) => ({ instrument, timeframe, bars, source: "fixture", volume_available: false, has_more: false, next_before: 100, warnings: [] });
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
-function Probe({ instrument = a, timeframe = "1m" }) { state = useChartData(instrument, timeframe); return <span>{state.bars.map((row) => row.close).join(",")}</span>; }
+function Probe({ instrument = a, timeframe = "1m", positionsEnabled = true }) { state = useChartData(instrument, timeframe, { positionsEnabled }); return <span>{state.bars.map((row) => row.close).join(",")}</span>; }
 beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   jest.useFakeTimers(); jest.clearAllMocks(); streams = [];
@@ -21,6 +21,17 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); jest.useRealTimers(); });
 const render = async (props = {}) => act(async () => { root.render(<Probe {...props} />); });
+
+test("inactive tiles retain their stream but do not poll broker positions", async () => {
+  await render({positionsEnabled:false});
+  await act(async () => jest.advanceTimersByTime(5000));
+  expect(chartApi.positions).not.toHaveBeenCalled(); expect(streams).toHaveLength(1);
+  await render({positionsEnabled:true});
+  expect(chartApi.positions).toHaveBeenCalledTimes(1); expect(streams).toHaveLength(1);
+  await render({positionsEnabled:false});
+  await act(async () => jest.advanceTimersByTime(5000));
+  expect(chartApi.positions).toHaveBeenCalledTimes(1); expect(streams[0].close).not.toHaveBeenCalled();
+});
 
 test("switching identity aborts old requests and ignores late history", async () => {
   const pending = deferred(); chartApi.history.mockImplementationOnce(() => pending.promise);

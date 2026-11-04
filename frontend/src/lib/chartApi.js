@@ -1,4 +1,7 @@
 import { API, apiClient } from "./api";
+import { createChartStreamPool } from "./chartStreamPool";
+
+const chartStreams = createChartStreamPool(API);
 
 // This adapter deliberately exposes only read endpoints. Closing a browser
 // stream releases its chart lease on the server, never an execution lease.
@@ -12,7 +15,5 @@ export const chartApi = {
   positions: (instrumentKey, { signal } = {}) => apiClient.get("/charts/positions", {
     params: { instrument_key: instrumentKey }, signal, timeout: 15000,
   }).then((response) => response.data),
-  stream: (instrumentKey, timeframe) => new EventSource(`${API}/charts/stream?${new URLSearchParams({
-    instrument_key: instrumentKey, timeframe,
-  })}`),
+  stream: (instrumentKey, timeframe) => chartStreams.stream(instrumentKey, timeframe),
 };
