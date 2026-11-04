@@ -84,3 +84,6 @@ async def streams(request: Request, channels: str = Query(..., max_length=12000)
 # Watchlist preferences and quotes share this chart-only API namespace.
 from app.routers.chart_watchlist import api as watchlist_api
 api.include_router(watchlist_api)
+
+from app.routers.chart_options import api as options_api
+api.include_router(options_api)

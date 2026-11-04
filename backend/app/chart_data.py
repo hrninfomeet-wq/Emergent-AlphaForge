@@ -156,6 +156,9 @@ def _instrument(row: Any, today: str) -> dict | None:
     if underlying:
         result["underlying"] = underlying
     if kind in {"option", "future"}:
+        underlying_key = row.get("underlying_key")
+        if isinstance(underlying_key, str) and underlying_key.strip() == underlying_key and 0 < len(underlying_key) <= 200:
+            result["underlying_key"] = underlying_key
         try:
             expiry = datetime.fromtimestamp(_timestamp(row.get("expiry"), milliseconds=True), IST).date().isoformat()
         except (TypeError, ValueError, OverflowError, OSError):

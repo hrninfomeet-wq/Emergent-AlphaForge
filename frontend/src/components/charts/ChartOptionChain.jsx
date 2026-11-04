@@ -9,9 +9,11 @@ const timestamp = (value) => finiteValue(value) && Number(value) > 0 && Number(v
 const selectable = (leg) => Boolean(leg?.instrument?.instrument_key);
 
 function QuoteCells({ leg, side, strike, itm, onChoose }) {
-  const title = `${side} ${strike} · ${leg?.quote_status || "freshness unknown"} · ${leg?.quote_time_ms ? `quote ${timestamp(leg.quote_time_ms)}` : "exchange quote time unavailable"}`;
+  const source = (field) => leg?.field_sources?.[field] || "upstox_rest_v2";
+  const title = `${side} ${strike} · ${leg?.quote_status || "freshness unknown"} · LTP: ${source("ltp")} · ${leg?.quote_time_ms ? `quote ${timestamp(leg.quote_time_ms)}` : "exchange quote time unavailable"}`;
   const values = [numberText(leg?.oi_change), numberText(leg?.oi), numberText(leg?.volume), numberText(leg?.iv, 2)];
-  const metrics = values.map((value, index) => <td key={index} className={itm ? "is-itm" : ""} title={index === 0 ? "Change to vendor previous OI; reference period unspecified" : index === 3 ? "Vendor IV as received; units unspecified" : undefined}>{value}</td>);
+  const descriptions = [`Change to vendor previous OI; reference period unspecified; OI source: ${source("oi")}`, `OI source: ${source("oi")}`, `Volume source: ${source("volume")}`, "Vendor IV as received from REST; units unspecified"];
+  const metrics = values.map((value, index) => <td key={index} className={itm ? "is-itm" : ""} title={descriptions[index]}>{value}</td>);
   const price = <td key="price" className={`chart-option-price ${itm ? "is-itm" : ""}`} title={title}>
     <button type="button" className="chart-option-ltp" disabled={!selectable(leg)} aria-label={`Load ${strike} ${side} chart at price`} onClick={() => onChoose(leg)}>{numberText(leg?.ltp, 2)}</button>
     <button type="button" className="chart-option-chart" disabled={!selectable(leg)} aria-label={`Load ${strike} ${side} chart`} onClick={() => onChoose(leg)}>Chart</button>
@@ -45,7 +47,7 @@ export default function ChartOptionChain({ instrument, onSelect, onClose }) {
         <button ref={closeButton} type="button" className="chart-option-close" aria-label="Close option chain" onClick={onClose}><X size={18} /></button></header>
       <div className="chart-option-toolbar">
         <label>Expiry <select aria-label="Option expiry" value={expiry} disabled={loading || !expiries.length} onChange={(event) => state.setExpiry(event.target.value)}>{!expiries.length && <option value="">Unavailable</option>}{expiries.map((date) => <option key={date} value={date}>{date}</option>)}</select></label>
-        <span>Spot <strong>{finiteValue(data?.spot) ? priceText(data.spot) : "—"}</strong></span><span>ATM <strong>{numberText(data?.atm_strike, 2)}</strong></span>
+        <span title="Spot and ATM use the REST snapshot; exchange quote time is unavailable.">Spot (snapshot) <strong>{finiteValue(data?.spot) ? priceText(data.spot) : "—"}</strong></span><span>ATM <strong>{numberText(data?.atm_strike, 2)}</strong></span>
         <span className={`chart-option-status ${streamHealthy && status === "Live updates" ? "is-streaming" : ""}`} role="status">{loading ? "Loading…" : status}</span>
         <button type="button" aria-label="Refresh option chain" disabled={loading} onClick={state.refresh}><RefreshCw size={13} /> Refresh</button>
       </div>
