@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useLayoutEffect, useRef } from "react";
 import { RefreshCw, X } from "lucide-react";
 import useChartOptionChain from "./useChartOptionChain";
 import { finiteValue, priceText, timeText } from "./chartPresentation";
@@ -26,6 +26,18 @@ export default function ChartOptionChain({ instrument, onSelect, onClose }) {
   const state = useChartOptionChain(instrument);
   const { data, expiry, expiries, loading, error, warnings, empty, status, streamHealthy } = state;
   const dialog = useRef(null), closeButton = useRef(null), titleId = useId(), descriptionId = useId();
+  const scrollContainer = useRef(null);
+  const rows = data?.rows || [];
+  const windowIdentity = JSON.stringify([instrument?.instrument_key, expiry, state.center ?? null, rows[0]?.strike, rows[rows.length - 1]?.strike]);
+  useLayoutEffect(() => {
+    const scroller = scrollContainer.current;
+    if (!scroller) return;
+    const atm = scroller.querySelector("tr.is-atm");
+    if (!atm) { scroller.scrollTop = 0; return; }
+    const rowBounds = atm.getBoundingClientRect(), viewportBounds = scroller.getBoundingClientRect();
+    scroller.scrollTop = Math.max(0, scroller.scrollTop + rowBounds.top - viewportBounds.top + rowBounds.height / 2 - scroller.clientHeight / 2);
+    // Quote updates preserve the user's scroll; only a new strike window centers.
+  }, [windowIdentity]);
   useEffect(() => {
     const previous = document.activeElement;
     closeButton.current?.focus();
@@ -40,7 +52,6 @@ export default function ChartOptionChain({ instrument, onSelect, onClose }) {
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
   };
   const choose = (leg) => { if (selectable(leg)) { onSelect(leg.instrument); onClose(); } };
-  const rows = data?.rows || [];
   return <div className="chart-option-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section ref={dialog} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descriptionId} className="chart-option-chain" onKeyDown={onKeyDown}>
       <header className="chart-option-header"><div><small>OPTION CHAIN</small><h2 id={titleId}>{data?.underlying?.symbol || instrument?.symbol || "Options"}</h2></div>
@@ -61,7 +72,7 @@ export default function ChartOptionChain({ instrument, onSelect, onClose }) {
       {loading && <p className="chart-option-empty" role="status">Loading option chain…</p>}
       {empty && <p className="chart-option-empty">No listed option expiries for this instrument.</p>}
       {!loading && data && rows.length === 0 && <p className="chart-option-empty">No contracts in this strike window. Try Back to ATM or another expiry.</p>}
-      {rows.length > 0 && <div className="chart-option-scroll" tabIndex={0} role="region" aria-label="Option chain table">
+      {rows.length > 0 && <div ref={scrollContainer} className="chart-option-scroll" tabIndex={0} role="region" aria-label="Option chain table">
         <table><caption className="chart-option-sr-only">Calls and puts by strike. Price and Chart buttons load the contract chart.</caption><thead>
           <tr className="chart-option-sides"><th colSpan={5} scope="colgroup">CALLS · CE</th><th scope="col">Strike</th><th colSpan={5} scope="colgroup">PUTS · PE</th></tr>
           <tr>{["ΔOI", "OI", "Volume", "IV (vendor)", "LTP", "Strike", "LTP", "IV (vendor)", "Volume", "OI", "ΔOI"].map((label, index) => <th key={index} scope="col" title={label === "ΔOI" ? "Change to vendor previous OI; reference period unspecified" : undefined}>{label}</th>)}</tr>

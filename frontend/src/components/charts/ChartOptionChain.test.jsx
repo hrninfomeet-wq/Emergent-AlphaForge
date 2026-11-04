@@ -43,3 +43,23 @@ test("empty and failed snapshots explain absence without fabricated values", asy
   state.data = null; state.error = "Option chain could not be loaded."; await render(); expect(container.querySelector('[role="alert"]').textContent).toContain("could not");
   state.error = ""; state.empty = true; await render(); expect(container.textContent).toContain("No listed option expiries"); expect(container.querySelector("tbody")).toBeNull();
 });
+
+test("centers ATM on a new window while quote-only updates preserve manual scroll", async () => {
+  const geometry = jest.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function () {
+    return { top: this.matches("tr.is-atm") ? 900 : 100, height: this.matches("tr.is-atm") ? 40 : 400 };
+  });
+  const height = jest.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(400);
+  try {
+    await render(); const scroller = container.querySelector(".chart-option-scroll");
+    expect(scroller.scrollTop).toBe(620);
+    scroller.scrollTop = 123;
+    state.data = { ...state.data, captured_at_ms: state.data.captured_at_ms + 1000,
+      rows: [{ ...state.data.rows[0], ce: { ...leg, ltp: 456 } }] };
+    await render(); expect(scroller.scrollTop).toBe(123);
+    state.center = 27000;
+    state.data = { ...state.data, rows: [{ strike: 27000, ce: leg, pe: null }] };
+    await render(); expect(scroller.scrollTop).toBe(0);
+    state.center = null; state.data = { ...state.data, rows: [{ strike: 25000, atm: true, ce: leg, pe: null }] };
+    await render(); expect(scroller.scrollTop).toBe(620);
+  } finally { geometry.mockRestore(); height.mockRestore(); }
+});

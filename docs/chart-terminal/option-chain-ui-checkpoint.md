@@ -59,3 +59,53 @@ approach: compare UI state handling directly against backend fields and assert
 preserved capture time under failure. Dead ends to avoid: treating a recent SSE
 arrival as proof of fresh quotes, clearing the last snapshot during a failed
 same-context refresh, or selecting expired contracts after IST rollover.
+
+## Isolated option fixture acceptance support
+
+`tests/manual/chart_option_fixture.py` injects synthetic catalogue/REST adapters
+into the real `ChartOptionsService` and real `/api/charts/options` router. The
+terminal fixture shares its quote manager with watchlists, resolves generated
+options in existing chart history/streams, and preserves paper `NSE_FO|999`.
+NIFTY and SENSEX each have two future expiries (current IST date plus three and
+ten calendar days) and 91 strikes per expiry. ATM CE has literal zero metrics;
+the next higher CE has missing OI/previous OI/volume/IV. Other quotes change each
+second. Payload source is `synthetic_ui_fixture` with an explicit synthetic notice.
+
+After root restarts the isolated fixture, get a current key from a chain response:
+
+```text
+GET /api/charts/options/chain?instrument_key=NSE_INDEX%7CNifty%2050
+```
+
+To force a visible streaming update, POST `/api/fixture/option-market` JSON:
+
+```json
+{"instrument_key":"<ce.instrument.instrument_key from a displayed row>","ltp":321.25,"oi":555,"volume":123}
+```
+
+`GET /api/fixture/option-state` reports active quote leases, their instrument keys
+and overrides; closing the only chain/watchlist consumer must release its lease.
+Values persist only in this fixture process. No production launch or broker calls.
+
+Confirmed: repository `.venv/Scripts/python.exe` import check loaded neither
+`app.runtime`, `app.encryption` nor `app.warehouse`; the Upstox client import is an
+explicit forbidden-remote stub. ASGI checks passed both NIFTY and SENSEX expiry,
+chain (91 total / 41 displayed), selected-option history, forced streaming
+LTP/OI/volume update, single-lease acquisition and zero-lease cleanup. Default
+system Python lacks `pymongo`; launch this fixture with the repository `.venv`.
+Browser acceptance remains root-owned.
+
+## ATM opening viewport follow-up
+
+Root browser review found the initially highlighted ATM below the visible table.
+The dialog now centers ATM using geometry relative to its own scroll container
+on a new instrument/expiry/strike window. A window without ATM resets to the top.
+The identity excludes quote values, capture times and ATM movement within the
+same returned window, so ticking snapshots preserve the user's manual scroll.
+No page scroll or fullscreen ownership changes. Root's provenance tooltips and
+Spot (snapshot) label are preserved.
+
+Confirmed: focused React rerun passes both suites, 16 tests. The new geometry
+regression checks initial centering, manual scroll preservation after changed LTP
+and capture time, top reset when paging away from ATM, and centering after ATM
+reset. Browser geometry acceptance remains root-owned after the next build.

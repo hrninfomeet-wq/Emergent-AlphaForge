@@ -86,6 +86,9 @@ SENSEX_INDEX = {**INDEX, 'instrument_key': 'BSE_INDEX|SENSEX', 'symbol': 'SENSEX
 EQUITY = {**INDEX, 'instrument_key': 'NSE_EQ|SYNTHETIC_RELIANCE', 'symbol': 'RELIANCE',
           'kind': 'equity', 'segment': 'NSE_EQ', 'volume_available': True}
 INSTRUMENTS = [INDEX, BANK_INDEX, SENSEX_INDEX, OPTION, EQUITY]
+from chart_option_fixture import FixtureOptionMarket, OptionQuoteManager, configure as configure_options
+option_market = FixtureOptionMarket([INDEX, SENSEX_INDEX])
+INSTRUMENTS.extend(option_market.instruments.values())
 
 class FixtureClock(Clock):
     # Advance between cycles only: snapshot timestamps cannot run microscopically
@@ -150,6 +153,30 @@ async def set_premium(body: Premium):
     market.premium = body.premium
     return {'premium': market.premium, 'notice': NOTICE}
 
+class OptionMarketUpdate(BaseModel):
+    instrument_key: str
+    ltp: float | None = Field(default=None, ge=0, le=1000000, allow_inf_nan=False)
+    oi: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    volume: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+@app.post('/api/fixture/option-market')
+async def set_option_market(body: OptionMarketUpdate):
+    if body.instrument_key not in option_market.instruments:
+        raise HTTPException(400, 'Unknown synthetic option instrument')
+    changes = {key: value for key, value in body.model_dump(exclude_none=True).items() if key != 'instrument_key'}
+    if not changes:
+        raise HTTPException(400, 'Supply at least one synthetic ltp, oi or volume')
+    option_market.overrides.setdefault(body.instrument_key, {}).update(changes)
+    return {'instrument_key': body.instrument_key, 'values': option_market.metrics(body.instrument_key),
+            'source': 'synthetic_ui_fixture', 'warnings': [NOTICE]}
+
+@app.get('/api/fixture/option-state')
+async def option_state():
+    return {'source': 'synthetic_ui_fixture', 'warnings': [NOTICE], 'expiries': option_market.expiries,
+            'active_leases': len(app.state.quote_manager.leases),
+            'leased_keys': [list(keys) for keys in app.state.quote_manager.leases.values()],
+            'overrides': option_market.overrides}
+
 @app.get('/api/charts/instruments')
 async def instruments(q: str = ''):
     query = q.upper()
@@ -169,6 +196,8 @@ def frame_seconds(frame):
 def fixture_price(key):
     if key == OPTION['instrument_key']:
         return market.premium
+    if key in option_market.instruments:
+        return option_market.metrics(key)['ltp']
     return market.spot * {'NSE_INDEX|Nifty 50': 1, 'NSE_INDEX|Nifty Bank': 2, 'BSE_INDEX|SENSEX': 3}.get(key, 1)
 
 
@@ -181,7 +210,7 @@ def configure_watchlist(database=None):
     collection, client = open_collection(database)
     app.state.watchlist_client = client
     app.state.watchlist_store = WatchlistStore(collection, resolve_watchlist_instrument)
-    app.state.quote_manager = SyntheticQuoteManager(INSTRUMENTS, fixture_price)
+    app.state.quote_manager = OptionQuoteManager(INSTRUMENTS, fixture_price, option_market)
     watchlist_router.get_watchlist_store = lambda: app.state.watchlist_store
     watchlist_router.get_quote_manager = lambda: app.state.quote_manager
     NOTICE = ('SYNTHETIC PAPER TEST — no broker; isolated test storage.' if database else
@@ -193,6 +222,7 @@ def configure_watchlist(database=None):
 
 configure_watchlist()
 app.include_router(watchlist_router.api, prefix='/api/charts')
+configure_options(app, option_market)
 
 def bar(key, frame, stamp, n=0):
     price = fixture_price(key)
