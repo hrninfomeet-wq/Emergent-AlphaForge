@@ -1836,3 +1836,17 @@ fullscreen; retain a window-maximize fallback when the browser refuses the API.
 Dead ends: relying on EventSource reconnect for one failed producer; leaving
 individual-canvas fullscreen able to hide the shared confirmation panel; starting
 the fixture while CRA is rebuilding/removing its index.html.
+
+## 2026-11-04 — Watchlist persistence acceptance
+
+Core lesson: an in-memory UI fixture cannot prove persistence across restarts.
+Confirmed approach: real watchlist store/router against an explicitly allowlisted
+isolated Mongo database, synthetic quote manager, and process stop/start. Chrome
+edits retained the same response digest afterward; selected 41 Python/20 React
+checks and CI build passed. Revision CAS and server-confirmed UI prevent lost
+edits; bounded batch leases preserve execution subscriptions and avoid storing
+browsed price tape. Recheck unavailable as well as valid instruments for recovery.
+Dead ends: blank-label frontend/backend mismatch; copying all tick maps per row;
+relying on transport reconnect while a subset remains unavailable; starting the
+fixture before CRA finishes recreating index.html. Keep source checkpoints when
+an agent hits its limit, then recover files instead of restarting implementation.

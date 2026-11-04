@@ -32,7 +32,7 @@ export function readLayout(storage, initialConfigs) {
     const state = JSON.parse(raw);
     const layout = LAYOUTS.find(item => item.id === state.layout);
     const valid = state.version === 1 && layout && Number.isInteger(state.active) && state.active >= 0 && state.active < layout.count &&
-      typeof state.syncSymbol === 'boolean' && typeof state.syncCrosshair === 'boolean' && Array.isArray(state.tiles) && state.tiles.length === 6 &&
+      (state.watchlistVisible === undefined || typeof state.watchlistVisible === 'boolean') && typeof state.syncSymbol === 'boolean' && typeof state.syncCrosshair === 'boolean' && Array.isArray(state.tiles) && state.tiles.length === 6 &&
       state.tiles.every(tile => tile && tile.instrument && typeof tile.instrument.instrument_key === 'string' && tile.instrument.instrument_key.length > 0 &&
         typeof tile.instrument.symbol === 'string' && TIMEFRAMES.includes(tile.timeframe) && configsValid(tile.configs));
     if (!valid) throw new Error('invalid layout');

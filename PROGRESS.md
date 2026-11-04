@@ -55,7 +55,7 @@ blotter agrees. Unsupported market/native protection types are explicit in UI.
 
 ## Next — strictly sequential
 
-Current item: **3, backend watchlist**. Item 2 passed source and isolated browser checks. Phase 1 acceptance passed on the isolated
+Current item: **4, option chain**. Items 1–3 passed source and isolated browser checks. Phase 1 acceptance passed on the isolated
 8002 server in Chrome; production 3000/8001 has not been restarted or changed.
 
 2. Multi-chart layouts (wrong version: costs redone work). 1/2/3/4/6 chart variants,
@@ -93,7 +93,7 @@ Current item: **3, backend watchlist**. Item 2 passed source and isolated browse
 
 Read this file, current git diff and scoped checkpoint; preserve prior work.
 Recover actual agent/file results rather than assuming a completion message.
-Continue item 3 from its scoped checkpoint; finish its persistence/browser gate before item 4. Update this file before starting every
+Continue item 4 from its scoped checkpoint; earlier items are committed and verified in isolation. Update this file before starting every
 item and after substantial sub-steps; update learning_log.md each execution.
 
 ## Verification and commits
@@ -191,3 +191,18 @@ Isolated fixture supports explicit --watchlist-db
 alphaforge_chart_terminal_fixture_20261104; default remains memory. Production
 DB name is rejected, and app.runtime is never imported. Fresh Mongo client/store
 read matched the seeded empty document. User database was not touched.
+
+### Item 3 completed — 2026-11-04
+
+Root recovered UI-agent files after its usage limit. CI build compiled; 20 selected
+frontend checks passed. Chrome add/rename/reorder/delete/load-active-chart passed.
+Actual fixture process stop/start with dedicated Mongo retained revision 7,
+Market focus, ordered labels [NIFTY, Reliance focus], and identical response digest.
+See docs/chart-terminal/watchlist-ui-checkpoint.md for evidence and screenshot.
+Production start-app.bat rollout/real-session checks remain pending, not claimed.
+
+Next item 4 plan: verify existing option data/official fields and expiry handling;
+reuse read-only source with truthful absent values, then build chain panel with
+expiry/ATM/CE-PE data and chart or ticket handoff. Pass mocked NIFTY/SENSEX nearest
+expiry plus live-update reconciliation, then read-only real API if session allows.
+Do not start item 5 until item 4 checks pass. No real orders, no second order path.

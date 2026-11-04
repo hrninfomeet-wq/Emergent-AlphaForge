@@ -63,10 +63,18 @@ from app.conditional.chart import chart_row
 from app.routers.conditional_orders import api as conditional_router
 from app.chart_stream import parse_chart_channels
 from app.chart_watchlist import WatchlistStore
+from app import chart_watchlist as watchlist_model
 from app.routers import chart_watchlist as watchlist_router
 from chart_watchlist_fixture import FIXTURE_DATABASE, open_collection, SyntheticQuoteManager
 
 NOTICE = 'SYNTHETIC PAPER TEST — isolated fixture; no broker or database.'
+_real_watchlist_state = watchlist_model.stream_state
+
+def synthetic_watchlist_state(*args, **kwargs):
+    return {**_real_watchlist_state(*args, **kwargs),
+            'source': 'synthetic_ui_fixture', 'warnings': [NOTICE]}
+
+watchlist_model.stream_state = synthetic_watchlist_state
 OPTION = {'instrument_key': 'NSE_FO|999', 'symbol': 'SYNTHETIC PAPER TEST NIFTY 25000 CE',
           'name': NOTICE, 'kind': 'option', 'exchange': 'NSE', 'segment': 'NSE_FO',
           'expiry': '2026-10-27', 'strike': 25000, 'option_type': 'CE', 'volume_available': True}

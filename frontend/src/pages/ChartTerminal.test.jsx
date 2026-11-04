@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import ChartTerminal from './ChartTerminal';
 import { LAYOUT_KEY } from '../lib/chartLayouts';
 const mockTrading = jest.fn();
+jest.mock('../components/charts/ChartWatchlist', () => ({onSelect}) => <button onClick={() => onSelect({instrument_key:'WATCH', symbol:'WATCH', exchange:'NSE', kind:'equity'})}>Watch symbol</button>);
 jest.mock('../components/charts/useChartTrading', () => instrument => { mockTrading(instrument.instrument_key); return { rows: [], mode: 'paper', stale: false, requestChange: jest.fn() }; });
 jest.mock('../components/charts/ChartTrading', () => ({ instrument }) => <div data-testid="trade-context">{instrument.symbol}</div>);
 jest.mock('../components/charts/ChartPositions', () => () => null);
@@ -55,4 +56,14 @@ test('browser fullscreen rejection falls back to a maximized workspace and Escap
  await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape'})));
  expect(surface.classList.contains('chart-terminal-window-maximized')).toBe(false);
  expect(document.body.style.overflow).toBe('');
+});
+
+test('watchlist choice updates the active chart and its visibility survives remount', async () => {
+ await act(async () => root.render(<ChartTerminal />));
+ await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'Watch symbol').click());
+ expect(container.querySelector('[data-testid="trade-context"]').textContent).toBe('WATCH');
+ await act(async () => container.querySelector('.chart-watchlist-toggle').click());
+ expect([...container.querySelectorAll('button')].some(b => b.textContent === 'Watch symbol')).toBe(false);
+ await act(async () => root.unmount()); root=createRoot(container); await act(async () => root.render(<ChartTerminal />));
+ expect(container.querySelector('.chart-watchlist-toggle').getAttribute('aria-pressed')).toBe('false');
 });

@@ -753,3 +753,17 @@ promotion-grade result.
 - **Deriving anything at capture time.** PCR, max pain and OI walls are all
   recomputable from a faithful snapshot; a derived value stored today freezes today's
   definition into a record that cannot be re-derived.
+
+### Terminal upgrade — 2026-11-04 source work, no production rollout
+
+- [x] Item 1: shared conditional chart trading and blotter; isolated paper fill,
+  P&L, confirmed drag and cancellation passed. Commits 9894d7d and 398a955.
+- [x] Item 2: all 17 layout variants, active context, shared stream recovery,
+  maximize/search and isolated restart persistence passed. Commit 0548405.
+- [x] Item 3: Mongo watchlist + quote ownership backend committed 4ddacbe;
+  41 selected backend and 20 frontend checks pass. Chrome add/edit/reorder/delete
+  survived isolated process restart with identical Mongo response digest.
+- [ ] Item 4 next: option chain. Items 5–6 follow sequentially.
+- Read [root progress](../PROGRESS.md). Production start-app.bat and live-session
+  acceptance remain pending. No real orders or broker-session actions.
+
