@@ -12,3 +12,5 @@
 .chart-terminal-maximized .chart-layout-multi .chart-timeframes button{min-width:21px;padding:3px;font-size:9px}.chart-terminal-maximized .chart-layout-multi .chart-data-actions button{padding:3px;font-size:9px}.chart-terminal-maximized .chart-layout-multi .chart-timeframe-bar{gap:3px}.chart-terminal-maximized .chart-layout-multi .chart-ohlc{flex-wrap:nowrap;white-space:nowrap;overflow:hidden}.chart-terminal-maximized .chart-layout-multi .chart-indicator-legend{padding:4px 8px}
 
 .chart-terminal-body{display:flex;align-items:flex-start;gap:10px}.chart-terminal-main{min-width:0;flex:1}.chart-watchlist-toggle{background:#172438;border:1px solid #364763;color:#cad7ea;border-radius:4px;padding:7px 10px}.chart-watchlist-toggle[aria-pressed=true]{border-color:#859dff}.chart-terminal-maximized .chart-terminal-body{align-items:flex-start}@media(max-width:700px){.chart-terminal-body{flex-direction:column}.chart-terminal-main{width:100%}}
+
+.chart-open-chain{display:inline-flex;align-items:center;justify-content:center;background:#172438;border:1px solid #3b4b65;border-radius:5px;color:#cad7ea;padding:8px 10px;font-size:11px;white-space:nowrap}

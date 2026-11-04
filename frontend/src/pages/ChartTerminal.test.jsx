@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import ChartTerminal from './ChartTerminal';
 import { LAYOUT_KEY } from '../lib/chartLayouts';
 const mockTrading = jest.fn();
+jest.mock('../components/charts/ChartOptionChain', () => ({onSelect,onClose}) => <div data-testid="option-chain"><button onClick={() => {onSelect({instrument_key:'OPTION',symbol:'OPTION',kind:'option'});onClose();}}>Open option</button></div>);
 jest.mock('../components/charts/ChartWatchlist', () => ({onSelect}) => <button onClick={() => onSelect({instrument_key:'WATCH', symbol:'WATCH', exchange:'NSE', kind:'equity'})}>Watch symbol</button>);
 jest.mock('../components/charts/useChartTrading', () => instrument => { mockTrading(instrument.instrument_key); return { rows: [], mode: 'paper', stale: false, requestChange: jest.fn() }; });
 jest.mock('../components/charts/ChartTrading', () => ({ instrument }) => <div data-testid="trade-context">{instrument.symbol}</div>);
@@ -66,4 +67,15 @@ test('watchlist choice updates the active chart and its visibility survives remo
  expect([...container.querySelectorAll('button')].some(b => b.textContent === 'Watch symbol')).toBe(false);
  await act(async () => root.unmount()); root=createRoot(container); await act(async () => root.render(<ChartTerminal />));
  expect(container.querySelector('.chart-watchlist-toggle').getAttribute('aria-pressed')).toBe('false');
+});
+
+test('option chain opens inside maximized workspace and hands the contract to the active chart', async () => {
+ await act(async () => root.render(<ChartTerminal />));
+ await act(async () => container.querySelector('[aria-label="Maximize chart layout"]').click());
+ expect(container.querySelector('.chart-terminal-maximized')).not.toBeNull();
+ await act(async () => container.querySelector('.chart-open-chain').click());
+ expect(container.querySelector('[data-testid="chart-terminal"] [data-testid="option-chain"]')).not.toBeNull();
+ await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'Open option').click());
+ expect(container.querySelector('[data-testid="trade-context"]').textContent).toBe('OPTION');
+ expect(container.querySelector('[data-testid="option-chain"]')).toBeNull();
 });
