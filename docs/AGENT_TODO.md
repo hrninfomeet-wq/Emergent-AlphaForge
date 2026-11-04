@@ -763,6 +763,9 @@ promotion-grade result.
 - [x] Item 3: Mongo watchlist + quote ownership backend committed 4ddacbe;
   41 selected backend and 20 frontend checks pass. Chrome add/edit/reorder/delete
   survived isolated process restart with identical Mongo response digest.
-- [ ] Item 4 next: option chain. Items 5–6 follow sequentially.
+- [x] Item 4: option chain implemented/tested and integrated into local main 68d5acb.
+  Real read-only chain schema and isolated Chrome updates passed; market-hours
+  acceptance remains pending. See chart-terminal/option-chain-acceptance.md.
+- [ ] Item 5 in progress: overlays, logged predictions and signal preview. Item 6 follows.
 - Read [root progress](../PROGRESS.md). Production start-app.bat and live-session
   acceptance remain pending. No real orders or broker-session actions.

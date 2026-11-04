@@ -230,3 +230,23 @@ isolated files. Root owns real read-only data checks, fixture acceptance and fin
 integration. Items 5–6 are not started. Next gate: option-chain identity/freshness,
 mock tests, read-only NIFTY/SENSEX coverage and isolated browser handoff. Do not
 mark live market updates accepted outside a live market observation.
+
+### Item 4 implemented and integrated — 2026-11-05
+
+Local main now 68d5acb (items 1–4); remote origin/main unchanged. Option-chain
+source, committed-tree tests/build, real read-only Upstox response replay and
+isolated Chrome acceptance passed. See docs/chart-terminal/option-chain-acceptance.md
+for exact evidence and remaining market-hours/rollout limits. Synthetic browser
+checks include quote changes, expiry/window selection, ATM centering without
+scroll jumps, active-chart handoff and subscription cleanup. No production restart.
+
+Item 5 plan (critical: analysis must not reach execution; wrong wiring moves money):
+1. Inventory existing concept/strategy evaluators and define a read-only adapter.
+   Pass when every preview entry point has no order/deployment action dependency.
+2. Independent persisted overlay controls; pass separate toggles/reload and chart
+   render checks without changing existing backtester or strategy logic.
+3. Candle-close probabilistic research view with durable predictions and later
+   no-change-baseline scoring; pass no look-ahead, deduplication and scoring tests.
+4. Strategy selection and chart markers; pass known synthetic signal and no-order
+   checks plus isolated browser acceptance. Then integrate tested feature to main.
+Item 6 follows: ranked FEATURE_PROPOSALS.md only, with value/effort/risk.

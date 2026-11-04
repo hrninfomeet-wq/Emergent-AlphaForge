@@ -1858,3 +1858,12 @@ and 20 frontend checks plus a CI build before local main was fast-forwarded.
 Lesson: verification in the working checkout alone can hide missing committed
 dependencies. Preserve unrelated edits and move main only after testing the exact
 commit. Avoid blanket staging or deploying unfinished option-chain source.
+
+### 2026-11-05 — Option-chain data meaning and acceptance
+
+Confirmed approach: read-only broker responses plus isolated streamed fixtures
+verified schema and UI separately; fresh envelope timestamps never certify absent
+fields. Preserve per-field REST/stream provenance and unknown IV/OI semantics.
+Lesson: open at ATM once per context; live updates must preserve manual scrolling.
+Avoid inferring exchange freshness from REST retrieval time or repeatedly resetting
+scroll on every tick. Production execution remained untouched.
