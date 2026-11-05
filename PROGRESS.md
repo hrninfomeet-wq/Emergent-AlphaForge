@@ -250,3 +250,13 @@ Item 5 plan (critical: analysis must not reach execution; wrong wiring moves mon
 4. Strategy selection and chart markers; pass known synthetic signal and no-order
    checks plus isolated browser acceptance. Then integrate tested feature to main.
 Item 6 follows: ranked FEATURE_PROPOSALS.md only, with value/effort/risk.
+
+Item 5 backend sub-step: pure concept and reviewed-strategy analysis, isolated
+research API and immutable prediction journal implemented. Root review and an
+independent reproduction exposed cached unfinished candles becoming final solely
+by wall time; history now records request-start time, and research requires that
+watermark to prove candle completion. Duplicate/late database acknowledgements
+cannot certify a late forecast; Mongo server time decides durable timeliness.
+Session bounds reuse the existing segment/calendar rules. Targeted unit checks
+passed. UI and isolated virtual-session fixture in progress. Do not integrate
+item 5 into main until final build, durable Mongo and browser checks pass.

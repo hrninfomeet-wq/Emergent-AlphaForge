@@ -467,6 +467,7 @@ class ChartDataService:
         # that finish in the same millisecond for the shared stream accumulator.
         self._last_history_asof_ms = max(int(self._clock() * 1000), self._last_history_asof_ms + 1)
         return {"instrument": instrument, "timeframe": timeframe, "bars": bars, "source": source,
+                "requested_at_ms": int(now * 1000),
                 "warnings": list(dict.fromkeys(warnings)), "next_before": bars[0]["time"] if bars and has_more else None,
                 "has_more": has_more, "as_of_ms": self._last_history_asof_ms,
                 "volume_available": instrument["volume_available"]}

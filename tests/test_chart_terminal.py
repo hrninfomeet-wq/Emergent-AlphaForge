@@ -215,17 +215,19 @@ def test_stream_adopts_rest_corrections_before_next_tick_and_skips_older_queued_
     asyncio.run(run())
 
 
-def test_chart_routes_only_mutate_watchlist_preferences_and_validate_timeframe(monkeypatch):
+def test_chart_routes_only_write_preferences_or_research_and_validate_timeframe(monkeypatch):
     from fastapi import FastAPI
     import httpx
     from app.routers import charts
     app = FastAPI()
     app.include_router(charts.api)
     writes = [(route.path, route.methods) for route in charts.api.routes if route.methods != {"GET"}]
-    assert writes == [("/charts/watchlist", {"PUT"})]
+    assert writes == [("/charts/watchlist", {"PUT"}), ("/charts/analysis/observe", {"POST"})]
     async def run():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://chart.test") as client:
             result = await client.get("/charts/history", params={"instrument_key": INSTRUMENT["instrument_key"], "timeframe": "0m"})
             assert result.status_code == 422
             assert (await client.post("/charts/positions")).status_code == 405
+            rejected = await client.post('/charts/analysis/observe', json={'instrument_key': 'NIFTY', 'timeframe': '1m', 'place_order': True})
+            assert rejected.status_code == 422
     asyncio.run(run())

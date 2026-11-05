@@ -87,3 +87,6 @@ api.include_router(watchlist_api)
 
 from app.routers.chart_options import api as options_api
 api.include_router(options_api)
+
+from app.routers.chart_research import api as research_api
+api.include_router(research_api)
