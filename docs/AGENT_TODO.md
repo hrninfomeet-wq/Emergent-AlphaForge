@@ -754,7 +754,7 @@ promotion-grade result.
   recomputable from a faithful snapshot; a derived value stored today freezes today's
   definition into a record that cannot be re-derived.
 
-### Terminal upgrade — 2026-11-04 source work, no production rollout
+### Terminal upgrade — deployed locally 2026-11-05
 
 - [x] Item 1: shared conditional chart trading and blotter; isolated paper fill,
   P&L, confirmed drag and cancellation passed. Commits 9894d7d and 398a955.
@@ -770,8 +770,9 @@ promotion-grade result.
   previews integrated at f8b6823. Clean tests/build, Chrome + Mongo, and a real
   NIFTY forward forecast checked; see chart-terminal/analysis-acceptance.md.
 - [x] Item 6: review-only ranked proposals in ../FEATURE_PROPOSALS.md. None built.
-- [ ] Rollout: old production backend still active; expired Flattrade session cannot
-  confirm broker exposure. Verify flat account/pending orders and preserve unrelated
-  deployed work before a guard-interrupting restart. Live order tests are user-only.
-- Read [root progress](../PROGRESS.md). Production start-app.bat and live-session
-  acceptance remain pending. No real orders or broker-session actions.
+- [x] Local rollout: deployed cac2f8f, source fingerprint matches across the app.
+  Two-tab Chrome acceptance for both option chains, full screen and order types
+  passed. Watchlist edits survived actual recreation and the normal launcher.
+  See [rollout checks](chart-terminal/rollout-acceptance.md) and [progress](../PROGRESS.md).
+- [ ] Operator: compare moving prices on the deployed screen during the next
+  session. Actual real-order acceptance remains exclusively the user's check.

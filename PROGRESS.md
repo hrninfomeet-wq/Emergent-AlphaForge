@@ -5,30 +5,18 @@ checkpoint. This is the user-requested execution ledger; docs/AGENT_TODO.md rema
 the project-wide work board. Existing completed chart feature: Lightweight Charts,
 indicator instances, drawings and daily points/% header.
 
-**Latest gate — 2026-11-05:** items 1–5 passed their isolated acceptance checks.
-Item 5 release candidate `2b39f84` passed 160 backend and 109 frontend tests in
-a clean checkout, the CI build, and Chrome + real fixture Mongo acceptance.
-See [research acceptance](docs/chart-terminal/analysis-acceptance.md). Local main
-contains the accepted features at `f8b6823`. Item 6 is complete in
-[FEATURE_PROPOSALS.md](FEATURE_PROPOSALS.md): six ranked proposals, no implementation.
-Market-session evidence below supplements the earlier isolated checkpoints.
+**Done — 2026-11-05:** items 1–5 implemented and deployed to
+[the local chart screen](http://localhost:3000/charts). Source release `cac2f8f`.
+Item 6 is complete in [FEATURE_PROPOSALS.md](FEATURE_PROPOSALS.md), with six
+ranked proposals for review only. See [rollout checks](docs/chart-terminal/rollout-acceptance.md)
+and [research acceptance](docs/chart-terminal/analysis-acceptance.md).
 
-**Rollout checkpoint, Nov 5 after close:** user confirmed current Flattrade positions
-and pending orders empty and authorized deployment. Built separately tagged
-frontend/backend release images at `e1a8ec9` with 19 proven shipped frontend
-modules and 19 backend overlays. Compared executor changes to the reviewed diff.
-Staged source passed 160 backend and 109 frontend checks. Embedded frontend and
-backend fingerprints both equal `f679453cdabb1bc15ee2a2047e6768de6cf03f4eaa83d47be3480a175a542118`.
-Verified running environment/mount parity. Previous image IDs are recorded in
-`%TEMP%/alphaforge-chart-release-e1a8ec9-b4jjhhti/pre-rollout-image-ids.json`.
-The three app containers were recreated with Mongo left running. New routes and
-both build IDs checked out. Chrome with the live cockpit open exposed HTTP/1.1
-connection starvation: three cockpit streams plus the chart page's header, chart
-and watchlist streams filled the API origin. Expiry reads timed out in Chrome but
-returned 200 directly; hiding the watchlist freed a connection and loaded NIFTY.
-In progress: proxy only the three read-only chart stream paths through frontend
-nginx; verify both tabs together, options, capabilities, startup and persistence.
-Previous images are tagged `alphaforge-before-chart-<service>:20261105`.
+**Next / how to resume:** no build item is pending. Use the normal launcher or
+open the existing Charts page. During a market session compare one moving chart
+and option chain in this deployed browser against your broker screen. The real
+order lifecycle remains exclusively the user's test. For any future rollback
+use the guarded procedure in the rollout checks. Earlier phase sections below
+are the chronological record, not open work. No remote push.
 
 **Market-session follow-up:** Nov 5, 11:06–11:07 IST. The committed option-chain
 parser/stream emitted moving quotes for the nearest NIFTY and SENSEX chains from

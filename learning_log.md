@@ -1879,3 +1879,13 @@ reproduced the original forecast and errors; closing the UI did not prevent
 settlement. Dead ends: inferring accuracy from one outcome, treating a healthy
 app guard as proof the broker account is flat, or treating integrated source as
 a running release. See docs/chart-terminal/analysis-acceptance.md.
+
+### 2026-11-05 — Test chart streams with the live cockpit open
+
+A REST endpoint can be healthy while Chrome starves it of connections. The
+live cockpit and chart page together filled the API origin's HTTP/1.1 pool.
+Releasing one stream immediately let the same expiry request through. Confirmed
+approach: put only the chart SSE endpoints behind the existing frontend nginx,
+then test both pages concurrently. Dead end: treating an isolated single-tab
+pass or a fast direct API request as proof of production browser behavior.
+See docs/chart-terminal/rollout-acceptance.md for the two-tab and restart checks.
