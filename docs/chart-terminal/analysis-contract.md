@@ -13,7 +13,7 @@ Backend pure module `chart_analysis.py` exports:
 - Bars are validated, chronological CLOSED OHLCV candles, `time` in seconds.
   Module does not fetch history or write data. Root filters closed candles.
 - Overlay IDs: `support_resistance`, `fvg`, `order_blocks`, `structure_breaks`,
-  `displacement`, `patterns`, `premium_discount`, `volume_imbalance`.
+  `change_of_character`, `displacement`, `patterns`, `premium_discount`, `volume_imbalance`.
   Last is explicitly unavailable without order-flow data; never relabel FVG as it.
 - Lines `{id,price,label,color}`; zones `{id,start,end,low,high,label,color}`;
   markers/signals `{id,time,price,direction,text,reasons}`. Time is when known,
@@ -39,7 +39,10 @@ Root router/service:
   predictions. Fail logging => no display as a logged forecast. Score later only
   against an actually closed target bar: MAE, Brier, interval coverage and matching
   no-change baseline. `scores:{evaluated,pending,model_mae,baseline_mae,model_brier,
-  baseline_brier,coverage}`. Logs exist only while forecast view is enabled.
+  baseline_brier,coverage}`. New forecasts require an enabled, visible view.
+  Existing pending records can settle after disconnect: a data-only worker leases
+  due records, checks the exact contract and re-reads the target candle. Missing
+  outcomes stay pending. The scoring worker does not create predictions.
 
 UI:
 - Per-tile optional validated `analysis:{overlays:{id:boolean},forecast:boolean,

@@ -5,6 +5,12 @@ checkpoint. This is the user-requested execution ledger; docs/AGENT_TODO.md rema
 the project-wide work board. Existing completed chart feature: Lightweight Charts,
 indicator instances, drawings and daily points/% header.
 
+**Latest gate — 2026-11-05:** items 1–5 passed their isolated acceptance checks.
+Item 5 release candidate `2b39f84` passed 160 backend and 109 frontend tests in
+a clean checkout, the CI build, and Chrome + real fixture Mongo acceptance.
+See [research acceptance](docs/chart-terminal/analysis-acceptance.md). Item 6 is
+the ranked, review-only proposal document. Production rollover is separate.
+
 ## Rules and current state
 
 - Work branch: `codex/chart-terminal`. Large pre-existing dirty checkout contains
