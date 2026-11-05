@@ -1,7 +1,8 @@
-import { API, apiClient } from "./api";
+import { apiClient } from "./api";
+import { chartStreamBase } from "./chartStreamBase";
 import { createChartStreamPool } from "./chartStreamPool";
 
-const chartStreams = createChartStreamPool(API);
+const chartStreams = createChartStreamPool(chartStreamBase);
 
 // This adapter deliberately exposes only read endpoints. Closing a browser
 // stream releases its chart lease on the server, never an execution lease.

@@ -1,4 +1,5 @@
-import { API, apiClient } from "./api";
+import { apiClient } from "./api";
+import { chartStreamBase } from "./chartStreamBase";
 
 const paramsFor = (instrumentKey, { expiry, center, radius = 20 } = {}) => ({
   instrument_key: instrumentKey, ...(expiry ? { expiry } : {}), ...(center != null ? { center } : {}), radius,
@@ -12,5 +13,5 @@ export const chartOptionApi = {
   chain: (instrumentKey, params, { signal } = {}) => apiClient.get("/charts/options/chain", {
     params: paramsFor(instrumentKey, params), signal, timeout: 15000,
   }).then(({ data }) => data),
-  stream: (instrumentKey, params) => new EventSource(`${API}/charts/options/stream?${new URLSearchParams(paramsFor(instrumentKey, params))}`),
+  stream: (instrumentKey, params) => new EventSource(`${chartStreamBase}/charts/options/stream?${new URLSearchParams(paramsFor(instrumentKey, params))}`),
 };

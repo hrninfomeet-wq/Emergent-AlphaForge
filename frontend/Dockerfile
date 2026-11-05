@@ -12,6 +12,7 @@ FROM node:20-alpine AS build
 
 ARG REACT_APP_BACKEND_URL=http://localhost:8001
 ENV REACT_APP_BACKEND_URL=$REACT_APP_BACKEND_URL
+ENV REACT_APP_CHART_STREAM_BASE=/api
 
 WORKDIR /app
 COPY frontend/package.json frontend/yarn.lock ./

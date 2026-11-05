@@ -13,12 +13,22 @@ contains the accepted features at `f8b6823`. Item 6 is complete in
 [FEATURE_PROPOSALS.md](FEATURE_PROPOSALS.md): six ranked proposals, no implementation.
 Market-session evidence below supplements the earlier isolated checkpoints.
 
-**Next / blocker:** the running port-3000 app still serves the preceding release.
-Its Flattrade session was expired/disconnected on the read-only preflight, so
-broker exposure was unknown despite an idle guard and paper deployments. No
-production restart or real order. Before rollout, establish current flat broker
-positions and pending orders and preserve the already-deployed unrelated changes
-in the dirty checkout. Resume from this paragraph, not the older phase plans.
+**Rollout checkpoint, Nov 5 after close:** user confirmed current Flattrade positions
+and pending orders empty and authorized deployment. Built separately tagged
+frontend/backend release images at `e1a8ec9` with 19 proven shipped frontend
+modules and 19 backend overlays. Compared executor changes to the reviewed diff.
+Staged source passed 160 backend and 109 frontend checks. Embedded frontend and
+backend fingerprints both equal `f679453cdabb1bc15ee2a2047e6768de6cf03f4eaa83d47be3480a175a542118`.
+Verified running environment/mount parity. Previous image IDs are recorded in
+`%TEMP%/alphaforge-chart-release-e1a8ec9-b4jjhhti/pre-rollout-image-ids.json`.
+The three app containers were recreated with Mongo left running. New routes and
+both build IDs checked out. Chrome with the live cockpit open exposed HTTP/1.1
+connection starvation: three cockpit streams plus the chart page's header, chart
+and watchlist streams filled the API origin. Expiry reads timed out in Chrome but
+returned 200 directly; hiding the watchlist freed a connection and loaded NIFTY.
+In progress: proxy only the three read-only chart stream paths through frontend
+nginx; verify both tabs together, options, capabilities, startup and persistence.
+Previous images are tagged `alphaforge-before-chart-<service>:20261105`.
 
 **Market-session follow-up:** Nov 5, 11:06–11:07 IST. The committed option-chain
 parser/stream emitted moving quotes for the nearest NIFTY and SENSEX chains from
