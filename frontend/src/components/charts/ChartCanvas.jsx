@@ -6,6 +6,7 @@ import { computeIndicators } from "../../lib/chartIndicators";
 import { instrumentIdentity } from "../../lib/chartModel";
 import { amountText, finiteValue, pluginDrawings, positionFresh, priceText, readDrawingEnvelope, saveDrawingEnvelope, timeText } from "./chartPresentation";
 import ChartOrderLines from "./ChartOrderLines";
+import ChartAnalysisOverlays from "./ChartAnalysisOverlays";
 
 const TOOLS = [
   { id: null, label: "Select / crosshair", Icon: Crosshair },
@@ -48,7 +49,7 @@ export function crosshairTarget(bars, time, timeframe) {
 /** Owns the imperative chart. A keyed page instance separates every contract
  * and timeframe; durable drawings are shared only by full contract identity. */
 export default function ChartCanvas({ instrument, timeframe, bars, configs, volumeAvailable, positions,
-  positionsAt, now, loading, loadingOlder, hasMore, loadOlder, error, tradingRows = [], onOrderChange, tradingDisabled = false, onRuntime, onCrosshair, showFullscreenControl = true }) {
+  positionsAt, now, loading, loadingOlder, hasMore, loadOlder, error, tradingRows = [], onOrderChange, tradingDisabled = false, onRuntime, onCrosshair, showFullscreenControl = true, analysisData, analysisSettings, analysisSignals }) {
   const host = useRef(null);
   const surface = useRef(null);
   const runtime = useRef(null);
@@ -282,6 +283,7 @@ export default function ChartCanvas({ instrument, timeframe, bars, configs, volu
     </div>
     <div className="chart-canvas-wrap">
       <div ref={host} className="chart-canvas" data-testid="chart-canvas" />
+      {orderRuntime && analysisData && <ChartAnalysisOverlays {...orderRuntime} data={analysisData} settings={analysisSettings} signals={analysisSignals} bars={bars} />}
       {orderRuntime && onOrderChange && <ChartOrderLines {...orderRuntime} rows={tradingRows} tickSize={Number(instrument.tick_size) || .05} onRequestChange={onOrderChange} disabled={tradingDisabled} />}
       {!!positions.length && <div className="chart-position-overlay" aria-label="On-chart unrealized profit and loss">{positions.map((position) => {
         const fresh = positionFresh(position, positionsAt, now);

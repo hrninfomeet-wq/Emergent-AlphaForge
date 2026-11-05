@@ -1,5 +1,6 @@
 import { INDEX_SHORTCUTS, TIMEFRAMES } from '../components/charts/chartPresentation';
 import { defaultIndicators, saveIndicatorSettings } from './chartIndicatorConfig';
+import { defaultAnalysisSettings, normalizeAnalysisSettings } from './chartAnalysisSettings';
 
 export const LAYOUTS = [
   { id: 'one', label: 'Single', areas: [[0]] },
@@ -22,7 +23,7 @@ export const LAYOUTS = [
 ].map(layout => ({ ...layout, count: new Set(layout.areas.flat()).size }));
 export const LAYOUT_KEY = 'alphaforge.chart.layout.v1';
 export const defaultLayout = (configs = defaultIndicators()) => ({ version: 1, layout: 'one', active: 0, syncSymbol: false, syncCrosshair: false,
-  tiles: Array.from({ length: 6 }, (_, i) => ({ instrument: INDEX_SHORTCUTS[i % INDEX_SHORTCUTS.length], timeframe: '1m', configs: JSON.parse(JSON.stringify(configs)) })) });
+  tiles: Array.from({ length: 6 }, (_, i) => ({ instrument: INDEX_SHORTCUTS[i % INDEX_SHORTCUTS.length], timeframe: '1m', configs: JSON.parse(JSON.stringify(configs)), analysis: defaultAnalysisSettings() })) });
 const configsValid = configs => saveIndicatorSettings({ setItem() {} }, configs).ok;
 export function readLayout(storage, initialConfigs) {
   const fallback = defaultLayout(initialConfigs);
@@ -34,9 +35,9 @@ export function readLayout(storage, initialConfigs) {
     const valid = state.version === 1 && layout && Number.isInteger(state.active) && state.active >= 0 && state.active < layout.count &&
       (state.watchlistVisible === undefined || typeof state.watchlistVisible === 'boolean') && typeof state.syncSymbol === 'boolean' && typeof state.syncCrosshair === 'boolean' && Array.isArray(state.tiles) && state.tiles.length === 6 &&
       state.tiles.every(tile => tile && tile.instrument && typeof tile.instrument.instrument_key === 'string' && tile.instrument.instrument_key.length > 0 &&
-        typeof tile.instrument.symbol === 'string' && TIMEFRAMES.includes(tile.timeframe) && configsValid(tile.configs));
+        typeof tile.instrument.symbol === 'string' && TIMEFRAMES.includes(tile.timeframe) && configsValid(tile.configs) && normalizeAnalysisSettings(tile.analysis));
     if (!valid) throw new Error('invalid layout');
-    return { state, writable: true, warning: '' };
+    return { state: { ...state, tiles: state.tiles.map(tile => ({ ...tile, analysis: normalizeAnalysisSettings(tile.analysis) })) }, writable: true, warning: '' };
   } catch { return { state: fallback, writable: false, warning: 'Saved chart layout could not be read; it was left untouched. Changes stay in this tab.' }; }
 }
 export function saveLayout(storage, state) {

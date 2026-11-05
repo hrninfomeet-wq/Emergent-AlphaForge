@@ -3,6 +3,9 @@ import { ChevronLeft, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import ChartCanvas from './ChartCanvas';
 import IndicatorSettings from './IndicatorSettings';
 import useChartData from './useChartData';
+import useChartAnalysis from './useChartAnalysis';
+import ChartAnalysisPanel from './ChartAnalysisPanel';
+import { defaultAnalysisSettings, normalizeAnalysisSettings } from '../../lib/chartAnalysisSettings';
 import { matchingPositions, priceText, readable, sessionQuote, streamFreshness, TIMEFRAMES, timeText } from './chartPresentation';
 import { instrumentIdentity } from '../../lib/chartModel';
 
@@ -10,6 +13,10 @@ export default function ChartTile({ tile, index, active, onActivate, onChange, o
   const data = useChartData(tile.instrument, tile.timeframe, { positionsEnabled: active });
   const [settings, setSettings] = useState(false);
   const [tools, setTools] = useState(false);
+  const analysisSettings = useMemo(() => normalizeAnalysisSettings(tile.analysis) || defaultAnalysisSettings(), [tile.analysis]);
+  const [analysisOpen, setAnalysisOpen] = useState(() => Boolean(tile.analysis?.forecast));
+  const effectiveAnalysis = useMemo(() => ({ ...analysisSettings, forecast: analysisOpen && analysisSettings.forecast }), [analysisSettings, analysisOpen]);
+  const analysis = useChartAnalysis(tile.instrument, tile.timeframe, effectiveAnalysis);
   const selected = data.instrument || tile.instrument;
   const identity = `${JSON.stringify(instrumentIdentity(selected))}|${tile.timeframe}`;
   const { instrument: dataInstrument, snapshot, bars, positions: dataPositions, positionsAt, positionWarnings, positionError } = data;
@@ -28,9 +35,13 @@ export default function ChartTile({ tile, index, active, onActivate, onChange, o
       <div className="chart-data-actions"><button type="button" className="chart-compact-tools-toggle" aria-expanded={tools} onClick={() => setTools(value => !value)}>Tools</button><button type="button" className={settings ? 'active' : ''} aria-expanded={settings} onClick={() => setSettings(value => !value)}><SlidersHorizontal size={14} />Indicators <span className="chart-count">{tile.configs.filter(row => row.enabled).length}</span></button><button type="button" aria-label="Refresh chart history and positions" disabled={data.loading || data.refreshing} onClick={data.refresh}><RefreshCw size={14} className={data.refreshing ? 'chart-spin' : ''} /></button></div>
     </div>
     {settings && <IndicatorSettings configs={tile.configs} setConfigs={value => onChange({ configs: typeof value === 'function' ? value(tile.configs) : value })} volumeAvailable={data.volumeAvailable} timeframe={tile.timeframe} onClose={() => setSettings(false)} />}
+    <div className="chart-data-actions"><button type="button" aria-expanded={analysisOpen} onClick={() => setAnalysisOpen(value => !value)}>Research overlays &amp; forecast</button></div>
+    {analysisOpen && <ChartAnalysisPanel settings={analysisSettings} onChange={value => onChange({ analysis: value })} analysis={analysis} now={now} />}
+    {!analysisOpen && analysis.error && <div className="chart-inline-warning" role="status">{analysis.error}</div>}
     {(data.error || warnings.length > 0) && <div className="chart-inline-warning" role="status">{[data.error, ...warnings].filter(Boolean).join(' · ')}</div>}
     <ChartCanvas showFullscreenControl={false} key={identity} instrument={selected} timeframe={tile.timeframe} bars={data.bars} configs={tile.configs} volumeAvailable={data.volumeAvailable} positions={active && showPositions ? positions : []}
       tradingRows={active ? tradingRows.filter(row => row.instrument_key === selected.instrument_key && row.mode === trading.mode) : []} onOrderChange={active ? trading.requestChange : undefined} tradingDisabled={trading.stale || trading.busy}
+      analysisData={analysis.data} analysisSettings={effectiveAnalysis} analysisSignals={analysis.signals}
       positionsAt={data.positionsAt} now={now} loading={data.loading} loadingOlder={data.loadingOlder} hasMore={data.hasMore} loadOlder={data.loadOlder} error={data.error} onRuntime={onRuntime} onCrosshair={onCrosshair} />
     <div className="chart-history-status"><button type="button" onClick={data.loadOlder} disabled={!data.hasMore || data.loadingOlder || data.loading}><ChevronLeft size={14} />{data.loadingOlder ? 'Loading…' : 'Load earlier'}</button><span>{data.bars.length.toLocaleString('en-IN')} candles · {readable(data.source)}{data.receivedAt ? ` · Reconciled ${timeText(data.receivedAt / 1000)} IST` : ''}</span><span className="chart-provisional">Tick candles provisional · REST reconciliation every 60s</span></div>
   </section>;

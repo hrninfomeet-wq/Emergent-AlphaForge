@@ -23,3 +23,13 @@ test('state round-trips independent tiles; corrupt or future versions are preser
   const bad = JSON.stringify({ ...state, version: 99 }); map.set(LAYOUT_KEY, bad);
   const result = readLayout(storage); expect(result.state.layout).toBe('one'); expect(result.writable).toBe(false); expect(map.get(LAYOUT_KEY)).toBe(bad);
 });
+
+test('legacy analysis defaults off and independent settings persist without enabling siblings', () => {
+  const state = defaultLayout(); state.tiles.forEach(tile => delete tile.analysis);
+  const legacy = readLayout({ getItem: () => JSON.stringify(state) }); expect(legacy.writable).toBe(true);
+  expect(legacy.state.tiles.every(tile => !tile.analysis.forecast && Object.values(tile.analysis.overlays).every(value => !value))).toBe(true);
+  legacy.state.tiles[1].analysis.overlays.fvg = true; legacy.state.tiles[1].analysis.strategyId = 'ema';
+  let raw; expect(saveLayout({ setItem: (key, value) => { raw = value; } }, legacy.state)).toBe('');
+  const result = readLayout({ getItem: () => raw }); expect(result.state.tiles[1].analysis.overlays.fvg).toBe(true); expect(result.state.tiles[0].analysis.overlays.fvg).toBe(false);
+  const prior = raw; result.state.tiles[1].analysis.forecast = 'yes'; expect(saveLayout({ setItem: () => { throw Error('must not write'); } }, result.state)).toContain('invalid'); expect(raw).toBe(prior);
+});
