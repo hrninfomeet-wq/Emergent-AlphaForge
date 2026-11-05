@@ -1867,3 +1867,15 @@ fields. Preserve per-field REST/stream provenance and unknown IV/OI semantics.
 Lesson: open at ATM once per context; live updates must preserve manual scrolling.
 Avoid inferring exchange freshness from REST retrieval time or repeatedly resetting
 scroll on every tick. Production execution remained untouched.
+
+### 2026-11-05 — Chart research: separate timing, scoring and execution
+
+Lesson: a candle can have ended on the clock while the cached snapshot still
+contains its forming price. Require the request-start watermark and an exact
+instrument/target match before scoring a locked forecast. Confirmed approach:
+a clean build, a virtual market with isolated Mongo, then a live read-only sample
+separated UI behavior from real market-data evidence. A fresh connection
+reproduced the original forecast and errors; closing the UI did not prevent
+settlement. Dead ends: inferring accuracy from one outcome, treating a healthy
+app guard as proof the broker account is flat, or treating integrated source as
+a running release. See docs/chart-terminal/analysis-acceptance.md.

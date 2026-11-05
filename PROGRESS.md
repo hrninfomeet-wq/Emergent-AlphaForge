@@ -8,8 +8,24 @@ indicator instances, drawings and daily points/% header.
 **Latest gate — 2026-11-05:** items 1–5 passed their isolated acceptance checks.
 Item 5 release candidate `2b39f84` passed 160 backend and 109 frontend tests in
 a clean checkout, the CI build, and Chrome + real fixture Mongo acceptance.
-See [research acceptance](docs/chart-terminal/analysis-acceptance.md). Item 6 is
-the ranked, review-only proposal document. Production rollover is separate.
+See [research acceptance](docs/chart-terminal/analysis-acceptance.md). Local main
+contains the accepted features at `f8b6823`. Item 6 is complete in
+[FEATURE_PROPOSALS.md](FEATURE_PROPOSALS.md): six ranked proposals, no implementation.
+Market-session evidence below supplements the earlier isolated checkpoints.
+
+**Next / blocker:** the running port-3000 app still serves the preceding release.
+Its Flattrade session was expired/disconnected on the read-only preflight, so
+broker exposure was unknown despite an idle guard and paper deployments. No
+production restart or real order. Before rollout, establish current flat broker
+positions and pending orders and preserve the already-deployed unrelated changes
+in the dirty checkout. Resume from this paragraph, not the older phase plans.
+
+**Market-session follow-up:** Nov 5, 11:06–11:07 IST. The committed option-chain
+parser/stream emitted moving quotes for the nearest NIFTY and SENSEX chains from
+existing WS tick-map reads; see [option-chain acceptance](docs/chart-terminal/option-chain-acceptance.md).
+A NIFTY one-minute prediction was committed before the real target close and
+scored from warehouse data in an isolated journal; see the research acceptance.
+No new broker socket or subscription was opened for these samples.
 
 ## Rules and current state
 

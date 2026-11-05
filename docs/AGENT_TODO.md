@@ -766,6 +766,12 @@ promotion-grade result.
 - [x] Item 4: option chain implemented/tested and integrated into local main 68d5acb.
   Real read-only chain schema and isolated Chrome updates passed; market-hours
   acceptance remains pending. See chart-terminal/option-chain-acceptance.md.
-- [ ] Item 5 in progress: overlays, logged predictions and signal preview. Item 6 follows.
+- [x] Item 5: research overlays, forecast journal/scoring and two read-only strategy
+  previews integrated at f8b6823. Clean tests/build, Chrome + Mongo, and a real
+  NIFTY forward forecast checked; see chart-terminal/analysis-acceptance.md.
+- [x] Item 6: review-only ranked proposals in ../FEATURE_PROPOSALS.md. None built.
+- [ ] Rollout: old production backend still active; expired Flattrade session cannot
+  confirm broker exposure. Verify flat account/pending orders and preserve unrelated
+  deployed work before a guard-interrupting restart. Live order tests are user-only.
 - Read [root progress](../PROGRESS.md). Production start-app.bat and live-session
   acceptance remain pending. No real orders or broker-session actions.

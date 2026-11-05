@@ -39,6 +39,7 @@ or premium session engine are disabled with the missing input named.
   displacement, one chart marker, a new logged forecast, one scored and one
   pending. The original forecast's error was 0.112 points vs 0.000 for no change.
   The next card showed 77 historical transitions. This is synthetic evidence.
+  [Chrome capture of the research controls, signal and forecast](evidence/research-paper.png).
 - Closing the research panel stopped issuing forecasts. After a second virtual
   candle, the worker settled both remaining SENSEX/NIFTY fixture records without
   a forecasting client: collection totals moved from two scored/two pending to
@@ -57,8 +58,21 @@ and a separate `BUILD_PATH`. Run `tests/manual/chart_terminal_fixture.py --build
 with the repo virtualenv. Use **only** `POST /api/fixture/research/advance` on
 port 8002 to close a virtual candle. The fixture cannot route to a live broker.
 
-Real market-hours feed behavior, forecast calibration and broker acceptance have
-not been established. If final history is missing a target candle it stays pending;
+If final history is missing a target candle it stays pending;
 no invented outcome enters the score. The production service on port 8001 still
 lacks the analysis catalogue, and an expired broker session cannot establish flat
 exposure for a backend restart. Source integration does not restart the guard.
+
+### Additional real-market observation
+
+Nov 5, 11:06–11:07 IST: the clean committed service read the current NIFTY one-minute
+warehouse series. The chart data service reported that its historical Upstox candle
+call was unavailable in this host process and identified the saved-data fallback.
+Forecast writes used only a separate collection in the isolated fixture database.
+From 187 eligible sample transitions, it journalled a next-close estimate of
+24,371.0132 at 11:06:12.710 IST (Mongo timestamp), before the 11:07 target.
+The target bar subsequently read 24,375.80; the no-change starting point was
+24,370.30. A fresh client read the same scored record and recomputed both errors:
+4.7868 versus 5.5000 points. This tests timely logging and scoring on real prices.
+One observed outcome establishes neither accuracy nor an advantage. The deployed
+browser, full-session reliability and live execution remain outside this check.

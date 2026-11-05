@@ -19,7 +19,7 @@ restart. All order testing was synthetic; no real orders were sent or changed.
   route. SENSEX paging showed 26 strikes from 77,000 to 79,500. Manual scroll stayed
   at 1353 pixels across quote updates. Closing removed the option lease; only the
   two-symbol watchlist lease remained. Full-layout maximize retained the dialog.
-- Preview: `%TEMP%/alphaforge-terminal-evidence/option-chain-checkpoint.png`.
+- [Chrome capture of the option-chain window](evidence/option-chain-paper.png).
 
 ## Limits
 
@@ -37,3 +37,20 @@ Fixture: repo `.venv/Scripts/python.exe tests/manual/chart_terminal_fixture.py
 --watchlist-db alphaforge_chart_terminal_fixture_20261104`. Port 8002 only.
 Production remains the earlier image. Next: item 5 overlays, logged/scored
 research predictions and read-only strategy preview. Keep execution unreachable.
+
+## Follow-up: observed during the Nov 5 market session
+
+At 11:06:57–11:07:15 IST the committed `ChartOptionsService` and `option_events`
+processed real REST responses and fresh tick-map reads from the already-connected
+Upstox stream. No new socket, subscription change, broker mutation or deployed
+HTTP route was used. Each 11-strike sample had 14 of 22 option legs marked live.
+
+| Underlying / nearest expiry | Matched contract | What changed |
+|---|---|---|
+| NIFTY, Nov 9, 123 strikes | 24,350 CE | WS LTP ₹163.00 → ₹164.75; WS volume 78,865,735 → 79,230,125. REST OI 6,498,180 → 6,535,165. |
+| SENSEX, Nov 5, 182 strikes | 78,700 CE | WS LTP ₹233.85 → ₹240.90; WS volume 80,143,880 → 80,555,060; WS OI 4,026,140 → 4,009,620. |
+
+This closes the earlier moving-data sampling gap. Real acquisition/release of
+the new service's subscriptions and delivery through the deployed browser
+remain unchecked: the readback used a no-op lease and the deployed API has no
+new option routes. Live OI was not observed changing in NIFTY's paired WS sample.
