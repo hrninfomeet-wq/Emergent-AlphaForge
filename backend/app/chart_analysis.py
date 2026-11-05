@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone, timedelta
 
 import pandas as pd
 
 from app.context_signals import recent_sr_levels, reversal_candle
 from app.features.registry import materialize_features
-from app.indicators import precompute_all_indicators, cas_window_mask
+from app.indicators import atr, detect_fvg, detect_swing_points, precompute_all_indicators, cas_window_mask
+from app.chart_data import TIMEFRAME_SECONDS
 from app.strategies.base import build_live_eval_ctx, validate_signal
 from app.strategies.plugins.fibonacci_pullback import FibonacciPullback
 from app.strategies.plugins.smc_liquidity_sweep_fvg import SMCLiquiditySweepFVG
@@ -16,6 +16,7 @@ from app.strategies.plugins.smc_liquidity_sweep_fvg import SMCLiquiditySweepFVG
 _OVERLAYS = {
     'support_resistance': 'Support / resistance', 'fvg': 'Fair value gaps',
     'order_blocks': 'Order blocks', 'structure_breaks': 'Structure breaks',
+    'change_of_character': 'Change of character',
     'displacement': 'Displacement', 'patterns': 'Rejection candles',
     'premium_discount': 'Premium / discount', 'volume_imbalance': 'Volume imbalance',
 }
@@ -43,9 +44,8 @@ def _scope(instrument, timeframe, strategy):
 
 
 def analysis_catalog(instrument, timeframe):
-    overlays = [dict(id=k, label=v, available=(k != 'volume_imbalance' and timeframe == '1m'),
-                     reason=('Requires order-flow data.' if k == 'volume_imbalance' else
-                             'Analysis currently supports 1-minute candles only.' if timeframe != '1m' else None))
+    overlays = [dict(id=k, label=v, available=(k != 'volume_imbalance' and timeframe in TIMEFRAME_SECONDS),
+                     reason=('Requires order-flow data.' if k == 'volume_imbalance' else None))
                 for k, v in _OVERLAYS.items()]
     strategies = []
     for s in _STRATEGIES.values():
@@ -106,14 +106,27 @@ def analyze_closed_bars(bars, instrument, timeframe, strategy_id=None):
         warnings.append('No closed candles available.')
         if strategy_id and strategy['reason'] is None: strategy['reason'] = 'Insufficient closed candles.'
         return {'overlays': overlays, 'strategy': strategy, 'warnings': warnings}
-    # Indicator gap logic is designed for 1-minute bars. Other intervals remain
-    # explicitly unavailable until their gap and session behavior is reviewed.
-    if timeframe != '1m':
-        warnings.append('Analysis currently supports 1-minute candles only.')
-        for item in overlays.values(): item['warnings'].append('Unavailable for this timeframe.')
-        return {'overlays': overlays, 'strategy': strategy, 'warnings': warnings}
     segment = 'options' if instrument.get('kind') in ('option', 'future') else 'spot'
-    enriched = precompute_all_indicators(frame, segment=segment)
+    if timeframe == '1m':
+        enriched = precompute_all_indicators(frame, segment=segment)
+    else:
+        # The strategy enrichment pipeline assumes one-minute gap spacing.
+        # Overlays need only these three causal inputs on the selected bars.
+        step = TIMEFRAME_SECONDS[timeframe]
+        if step < 86400:
+            dates = pd.to_datetime(frame.ts, unit='ms', utc=True).dt.tz_convert('Asia/Kolkata').dt.date
+            holes = frame.index[(dates == dates.shift()) & (frame.ts.diff() > step * 1000)]
+            if len(holes):
+                frame = frame.loc[holes[-1]:].copy()
+                warnings.append('Structure restarts after the latest intraday data gap.')
+            if segment == 'spot':
+                frame = frame.loc[~cas_window_mask(frame)].copy()
+        if frame.empty:
+            warnings.append('No closed continuous-session candles available.')
+            return {'overlays': overlays, 'strategy': strategy, 'warnings': warnings}
+        enriched = detect_swing_points(frame)
+        enriched['atr'] = atr(frame)
+        enriched['fvg'] = detect_fvg(frame)
     enriched = materialize_features(enriched, {}, ['swing_levels', 'displacement', 'choch', 'fvg_zones', 'order_block', 'premium_discount'], {})
     last = enriched.iloc[-1]
     levels = recent_sr_levels(enriched, len(enriched)-1)
@@ -142,8 +155,9 @@ def analyze_closed_bars(bars, instrument, timeframe, strategy_id=None):
             overlays['patterns']['markers'].append(_marker('pattern', t, row.close, pattern, 'Rejection candle'))
         if row['displacement']:
             overlays['displacement']['markers'].append(_marker('displacement', t, row.close, 'BULLISH' if row.close > row.open else 'BEARISH', 'Displacement'))
-        for col, direction in [('choch_up','BULLISH'), ('choch_down','BEARISH')]:
-            if row[col]: overlays['structure_breaks']['markers'].append(_marker(col, t, row.close, direction, 'Change of character'))
+        for col, direction in [('bos_up','BULLISH'), ('bos_down','BEARISH'), ('choch_up','BULLISH'), ('choch_down','BEARISH')]:
+            concept, label = ('structure_breaks', 'Break of structure') if col.startswith('bos') else ('change_of_character', 'Change of character')
+            if row[col]: overlays[concept]['markers'].append(_marker(col, t, row.close, direction, label))
     overlays['structure_breaks']['markers'] = overlays['structure_breaks']['markers'][-100:]
     hi, lo = last['last_swing_high_level'], last['last_swing_low_level']
     if pd.notna(hi) and pd.notna(lo) and hi > lo:

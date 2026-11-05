@@ -260,3 +260,13 @@ cannot certify a late forecast; Mongo server time decides durable timeliness.
 Session bounds reuse the existing segment/calendar rules. Targeted unit checks
 passed. UI and isolated virtual-session fixture in progress. Do not integrate
 item 5 into main until final build, durable Mongo and browser checks pass.
+
+Item 5 progress: a35c0bd is the backend sub-step. Root independently tested a
+real write/duplicate/settlement in the allowlisted fixture Mongo; a fresh client
+read the scored original. The synthetic example had model error 0.112 points
+versus 0.000 for no change; this is a scoring check, not model validation.
+Added bounded data-only settlement for pending predictions after closing a tab,
+segment-correct derivatives, multi-timeframe structural overlays and independent
+BOS/CHoCH. No change to backtester, optimizer, presets or deploy validation.
+Recovered UI/fixture agent files after usage exhaustion. Isolated final browser
+and clean build are next; main remains at completed item 4 until acceptance.

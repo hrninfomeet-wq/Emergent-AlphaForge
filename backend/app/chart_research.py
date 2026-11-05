@@ -11,6 +11,7 @@ import math
 import time
 from collections import OrderedDict
 from datetime import datetime
+from functools import lru_cache
 
 import numpy as np
 
@@ -19,6 +20,7 @@ from app.session_spec import session_spec
 
 MODEL = 'candle-analogues-v1'
 INTRADAY = {'1m', '3m', '5m', '15m', '30m', '1h'}
+_cached_spec = lru_cache(maxsize=2048)(session_spec)
 
 
 def number(value):
@@ -34,7 +36,7 @@ def number(value):
 def _session_bounds(stamp, instrument=None, continuous=False):
     day = datetime.fromtimestamp(stamp, IST)
     segment = 'options' if (instrument or {}).get('kind') in ('option', 'future') else 'spot'
-    spec = session_spec(day.date().isoformat(), segment)
+    spec = _cached_spec(day.date().isoformat(), segment)
     midnight = day.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     close_min = spec.cas_start_min if continuous and spec.has_cas else spec.close_min
     return midnight + spec.open_min * 60, midnight + close_min * 60, spec.expected_candles > 0
@@ -63,9 +65,15 @@ def closed_bars(history, timeframe, now):
         stamp = number(raw.get('time')) if isinstance(raw, dict) else None
         if stamp is None or stamp <= 0 or not stamp.is_integer():
             raise ValueError('Invalid analysis candle time')
-        if stamp > eligible_at or candle_end(stamp, timeframe, history.get('instrument')) > eligible_at:
+        instrument = history.get('instrument')
+        if timeframe in INTRADAY:
+            opened, closed, trading_day = _session_bounds(stamp, instrument)
+            if not trading_day or not opened <= stamp < closed:
+                continue
+        end = candle_end(stamp, timeframe, instrument)
+        if stamp > eligible_at or end > eligible_at:
             continue
-        if candle_end(stamp, timeframe, history.get('instrument')) <= stamp:
+        if end <= stamp:
             continue  # unusable out-of-session artifact, never a completed candle
         values = {key: number(raw.get(key)) for key in ('open', 'high', 'low', 'close')}
         if (any(v is None or v <= 0 for v in values.values()) or
@@ -97,6 +105,8 @@ def forecast_candidate(bars, timeframe, now, instrument=None):
     session_open, session_close, trading_day = _session_bounds(target, instrument, continuous=True)
     if not trading_day or target < session_open or end > session_close or not target <= now < end:
         return {'status': 'waiting', 'reason': 'Waiting for a recent closed candle with an open next-candle horizon.'}
+    if bars[-4]['time'] < session_open or any(b['time'] - a['time'] != step for a, b in zip(bars[-4:], bars[-3:])):
+        return {'status': 'unavailable', 'reason': 'Recent momentum context crosses a session boundary or data gap.'}
     samples = []
     wanted = _state(bars, len(bars) - 1)
     for i in range(3, len(bars) - 1):
@@ -144,8 +154,19 @@ def subject_key(instrument, timeframe):
 class PredictionJournal:
     def __init__(self, collection, clock=time.time):
         self.collection, self.clock = collection, clock
+        self.indexed = False
+        self.index_lock = asyncio.Lock()
+
+    async def ensure_indexes(self):
+        if self.indexed: return
+        async with self.index_lock:
+            if not self.indexed:
+                await self.collection.create_index([('subject', 1), ('status', 1), ('target_time', -1)])
+                await self.collection.create_index([('status', 1), ('model', 1), ('target_end', 1)])
+                self.indexed = True
 
     async def log(self, subject, candidate, instrument, timeframe):
+        await self.ensure_indexes()
         if candidate.get('status') != 'candidate' or self.clock() >= candidate['target_end']:
             return {'status': 'waiting', 'reason': 'Prediction horizon closed before logging.'}
         identity = f"{subject}:{candidate['source_time']}"
@@ -161,7 +182,7 @@ class PredictionJournal:
             }]}, '$$ROOT'
         ]}}], upsert=True)
         saved = await self.collection.find_one({'_id': identity})
-        if (self.clock() >= candidate['target_end'] or not saved or saved['status'] == 'late' or
+        if (self.clock() >= candidate['target_end'] or not saved or saved['status'] != 'pending' or
                 saved.get('persisted_at_ms', math.inf) >= candidate['target_end'] * 1000):
             return {'status': 'waiting', 'reason': 'Prediction was not durably logged before the horizon closed.'}
         return {key: value for key, value in {**saved, 'id': identity, 'status': 'logged'}.items() if key not in ('_id', 'subject')}
@@ -193,6 +214,13 @@ class PredictionJournal:
                 'baseline_mae': mean('baseline_error'), 'model_brier': mean('model_brier'),
                 'baseline_brier': mean('baseline_brier'), 'coverage': mean('covered'), 'window': 'latest 500 scored predictions'}
 
+    async def claim_due(self, now):
+        # Short leases recover on restart and bound retries across workers.
+        return await self.collection.find_one_and_update({
+            'model': MODEL, 'status': 'pending', 'target_end': {'$lte': now},
+            '$or': [{'next_score_check': {'$exists': False}}, {'next_score_check': {'$lte': now}}],
+        }, {'$set': {'next_score_check': now + 300}}, sort=[('target_end', 1)])
+
 
 class ChartResearchService:
     def __init__(self, *, history=None, journal=None, clock=time.time, analyzer=None):
@@ -209,6 +237,21 @@ class ChartResearchService:
             raise ValueError('Unsupported analysis timeframe')
         instrument = await self.history.resolve(key)
         return {'instrument': instrument, 'timeframe': timeframe, **analysis_catalog(instrument, timeframe)}
+
+    async def settle_due(self, limit=2):
+        """Score logged predictions even after a tab closes or the server restarts."""
+        for _ in range(limit):
+            now = self.clock()
+            doc = await self.journal.claim_due(now)
+            if not doc: break
+            try:
+                tf = doc['timeframe']
+                history = await self.history.history(doc['instrument_key'], tf, before=doc['target_end'], limit=3)
+                if subject_key(history['instrument'], tf) != doc['subject']:
+                    continue  # never settle on a recycled contract key
+                await self.journal.score(doc['subject'], closed_bars(history, tf, self.clock()), tf, self.clock())
+            except (ValueError, RuntimeError):
+                continue  # stale/absent data stays pending; no fabricated outcome
 
     async def observe(self, key, timeframe, strategy_id=None, forecast=False):
         from app.chart_analysis import analyze_closed_bars

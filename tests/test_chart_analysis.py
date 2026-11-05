@@ -15,7 +15,7 @@ def test_catalog_scope_and_orderflow():
     assert byid['smc_liquidity_sweep_fvg']['available']
     assert not byid['premium_momentum']['available'] and 'premium' in byid['premium_momentum']['reason']
     assert not next(x for x in catalog['overlays'] if x['id'] == 'volume_imbalance')['available']
-    assert not analysis_catalog(INST, '5m')['overlays'][0]['available']
+    assert analysis_catalog(INST, '5m')['overlays'][0]['available']
     assert not analysis_catalog({'instrument_key':'NSE_EQ|ABC', 'kind':'equity'}, '1m')['strategies'][0]['available']
 
 def test_deterministic_signal_closed_prefix_and_no_future_leak():
@@ -49,6 +49,20 @@ def test_fvg_zone_begins_at_detection_not_prior_bar():
     bars = candles(); bars[-1] = {**bars[-1], 'open':104., 'high':106., 'low':103., 'close':105.}
     zone = analyze_closed_bars(bars, INST, '1m')['overlays']['fvg']['zones'][0]
     assert zone['start'] == bars[-1]['time'] and zone['low'] == 101. and zone['high'] == 103.
+
+
+def test_higher_timeframe_patterns_and_derivative_auction_are_not_suppressed():
+    bars = candles(30)
+    for i, b in enumerate(bars): b['time'] = START + 300 * i
+    bars[-1].update(open=104., high=106., low=103., close=105.)
+    result = analyze_closed_bars(bars, INST, '5m', 'smc_liquidity_sweep_fvg')
+    assert result['overlays']['fvg']['zones'][0]['start'] == bars[-1]['time']
+    assert result['strategy']['status'] == 'unavailable'
+    bars = candles(30)
+    for i, b in enumerate(bars): b['time'] = START + (335 + i) * 60
+    bars[-1].update(open=104., high=106., low=103., close=105.)
+    derivative = analyze_closed_bars(bars, {'kind':'option'}, '1m')
+    assert derivative['overlays']['fvg']['zones'][0]['start'] == bars[-1]['time']
 
 def test_historical_markers_are_prefix_invariant_and_imports_are_read_only():
     import ast

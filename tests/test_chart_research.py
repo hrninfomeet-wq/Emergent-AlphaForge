@@ -31,6 +31,7 @@ class Cursor:
 
 class Collection:
     def __init__(self): self.rows = {}; self.on_write = None; self.server_now = (BASE + 3610) * 1000
+    async def create_index(self, fields): pass
     async def update_one(self, query, update, upsert=False):
         row = next((r for r in self.rows.values() if matches(r, query)), None)
         if isinstance(update, list):
@@ -179,3 +180,21 @@ def test_cas_and_segment_forecast_boundaries_follow_existing_session_spec():
     assert forecast_candidate(series, '1m', now, {'kind': 'option'})['status'] == 'candidate'
     option_stamp = int(datetime(2026, 11, 5, 15, 35, tzinfo=IST).timestamp())
     assert candle_end(option_stamp, '1m', {'kind': 'option'}) == option_stamp + 60
+
+
+@pytest.mark.asyncio
+async def test_settlement_after_view_closes_uses_exact_contract_and_only_target():
+    now = [BASE + 3610]; collection = Collection(); journal = PredictionJournal(collection, clock=lambda: now[0])
+    subject = subject_key(INSTRUMENT, '1m'); candidate = forecast_candidate(bars(), '1m', now[0]); saved = await journal.log(subject, candidate, INSTRUMENT, '1m')
+    async def claim(_): return collection.rows[saved['id']]
+    journal.claim_due = claim
+    class History:
+        identity = {**INSTRUMENT, 'expiry': 'different'}
+        async def history(self, key, tf, *, before, limit):
+            assert key == INSTRUMENT['instrument_key'] and before == candidate['target_end'] and limit == 3
+            return {'bars': bars(61)[-3:], 'instrument': self.identity, 'requested_at_ms': now[0] * 1000}
+    history = History(); now[0] = BASE + 3670
+    service = ChartResearchService(history=history, journal=journal, clock=lambda: now[0])
+    await service.settle_due(1); assert (await journal.summary(subject))['pending'] == 1
+    history.identity = INSTRUMENT
+    await service.settle_due(1); assert (await journal.summary(subject))['evaluated'] == 1
