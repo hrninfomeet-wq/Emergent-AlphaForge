@@ -111,6 +111,7 @@ async def fixture_status():
 service.status = fixture_status
 
 app = FastAPI(title=NOTICE)
+app.state.research_market = None
 app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:8002', 'http://127.0.0.1:8002'],
                    allow_methods=['GET', 'POST', 'PUT', 'OPTIONS'], allow_headers=['*'])
 
@@ -235,6 +236,10 @@ def bar(key, frame, stamp, n=0):
 @app.get('/api/charts/history')
 async def history(instrument_key: str, timeframe: str = '1m', before: int = None, limit: int = 600):
     instrument = get_instrument(instrument_key)
+    research = app.state.research_market
+    if research and research.supports(instrument_key, timeframe):
+        value = await research.history(instrument_key, timeframe, limit=limit, before=before)
+        return {**value, 'as_of_ms': int(time.time() * 1000)}
     step = frame_seconds(timeframe)
     end = (int(time.time()) // step) * step if before is None else ((before - 1) // step) * step
     count = min(max(limit, 1), 600)
@@ -277,16 +282,22 @@ def fixture_stream(channels):
                            'tick': {'last_price': price, 'close_price': price - 1,
                                     'ts': int(now * 1000), 'ingest_ts': int(now * 1000)},
                            'bar': bar(instrument_key, timeframe, int(now) // frame_seconds(timeframe) * frame_seconds(timeframe), 0)}
+                research = app.state.research_market
+                if research and research.supports(instrument_key, timeframe):
+                    forming = research.forming(instrument_key)
+                    payload.update(bars=[research.rows[instrument_key][-1], forming], source='synthetic_research_virtual_time',
+                                   warnings=['SYNTHETIC RESEARCH — virtual session; no broker or real prices.'])
+                    payload['tick'].update(last_price=forming['close'], close_price=research.rows[instrument_key][0]['open'])
                 yield 'event: snapshot\ndata: ' + json.dumps(payload) + '\n\n'
             await asyncio.sleep(1)
     return StreamingResponse(events(), media_type='text/event-stream', headers={'Cache-Control': 'no-store'})
 
 # Every other API route is explicitly unavailable rather than reaching production.
-@app.api_route('/api/{path:path}', methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
 async def unavailable(path: str):
     raise HTTPException(404, 'Unavailable in synthetic paper fixture')
 
 def configure_static(directory):
+    app.add_api_route('/api/{path:path}', unavailable, methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
     directory = Path(directory).resolve()
     if not (directory / 'index.html').is_file():
         raise SystemExit(f'Build index.html missing: {directory}')
@@ -299,10 +310,15 @@ def configure_static(directory):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=NOTICE)
     parser.add_argument('--build', default=os.environ.get('CHART_FIXTURE_BUILD', str(ROOT / 'frontend' / 'build')))
+    parser.add_argument('--research', action='store_true', help='Enable synthetic virtual market for closed-candle research')
     parser.add_argument('--watchlist-db', choices=[FIXTURE_DATABASE], default=None,
                         help='Persist watchlists only in the isolated allowlisted localhost Mongo database')
     args = parser.parse_args()
     configure_watchlist(args.watchlist_db)
+    if args.research:
+        from chart_research_fixture import configure_research, mount_research
+        configure_research(app, [INDEX, SENSEX_INDEX], args.watchlist_db)
+        mount_research(app)
     configure_static(args.build)
     import uvicorn
     print(NOTICE, flush=True)
