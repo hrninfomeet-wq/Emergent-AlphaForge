@@ -11,7 +11,15 @@ jest.mock("lightweight-charts", () => ({
     const pane = { setStretchFactor: jest.fn() };
     const scale = { subscribeVisibleLogicalRangeChange: jest.fn(), unsubscribeVisibleLogicalRangeChange: jest.fn(), setVisibleLogicalRange: jest.fn(), getVisibleRange: jest.fn(() => null), setVisibleRange: jest.fn(), fitContent: jest.fn() };
     const chart = { series: [], remove: jest.fn(), resize: jest.fn(), subscribeCrosshairMove: jest.fn(), unsubscribeCrosshairMove: jest.fn(), timeScale: () => scale, panes: () => [pane], removeSeries: jest.fn(),
-      addSeries: jest.fn((kind, options, index = 0) => { const series = { kind, options, index, applyOptions: jest.fn(), setData: jest.fn(), createPriceLine: jest.fn((line) => line), removePriceLine: jest.fn(), getPane: () => ({ paneIndex: () => series.index }), moveToPane: jest.fn((next) => { series.index = next; }) }; chart.series.push(series); return series; }) };
+      addSeries: jest.fn((kind, options, index = 0) => {
+        const series = { kind, options, index, attachPrimitive: jest.fn(), applyOptions: jest.fn(), setData: jest.fn(), createPriceLine: jest.fn((line) => line), removePriceLine: jest.fn(), getPane: () => ({ paneIndex: () => series.index }), moveToPane: jest.fn((next) => { series.index = next; }) };
+        series.dataByIndex = logical => {
+          const time = chart.series[0].setData.mock.lastCall[0][logical]?.time;
+          return series.setData.mock.lastCall[0].find(point => point.time === time) ?? null;
+        };
+        chart.series.push(series);
+        return series;
+      }) };
     mockCharts.push(chart); return chart;
   },
 }));
@@ -65,6 +73,57 @@ test("multiple EMA series retain their own values and update style/title without
   await render({ configs: [configs[1]] });
   expect(mockCharts[0].removeSeries).toHaveBeenCalledWith(fast);
   expect(mockCharts[0].removeSeries).not.toHaveBeenCalledWith(slow);
+});
+
+test("each RSI pane paints its own plotted value on updates, crosshair, warmup and leave", async () => {
+  const configs = [
+    { id: "rsi", instanceId: "fast", enabled: true, params: { period: 2 } },
+    { id: "rsi", instanceId: "slow", enabled: true, params: { period: 5 } },
+    { id: "atr", enabled: true, params: { period: 3 } },
+  ];
+  const candles = [100, 99, 98, 103, 105, 106, 104, 107].map((close, i) => ({
+    ...bars[i], open: close, high: close + 1, low: close - 1, close,
+  }));
+  await render({ configs, bars: candles });
+  const [price, fast, slow, atr] = mockCharts[0].series;
+  expect([fast.index, slow.index, atr.index]).toEqual([1, 2, 3]);
+  expect(price.attachPrimitive).not.toHaveBeenCalled();
+  expect(atr.attachPrimitive).not.toHaveBeenCalled();
+
+  const textDrawn = series => {
+    expect(series.attachPrimitive).toHaveBeenCalledTimes(1);
+    const primitive = series.attachPrimitive.mock.calls[0][0];
+    const context = { save: jest.fn(), restore: jest.fn(), fillRect: jest.fn(), measureText: text => ({ width: text.length * 6 }), fillText: jest.fn() };
+    primitive.paneViews()[0].renderer().draw({ useMediaCoordinateSpace: draw => draw({ context }) });
+    return context.fillText.mock.calls[0][0];
+  };
+  const check = (index, noPoint = false) => {
+    for (const series of [fast, slow]) {
+      const value = noPoint ? null : series.dataByIndex(index)?.value;
+      const formatted = Number.isFinite(value) ? value.toFixed(2) : "—";
+      expect(textDrawn(series)).toBe(`${series.options.title}  ${formatted}`);
+    }
+  };
+  const crosshair = mockCharts[0].subscribeCrosshairMove.mock.calls[0][0];
+  const hover = async index => act(async () => crosshair({
+    logical: index, time: candles[index]?.time, point: { x: 20, y: 10 }, seriesData: new Map(), sourceEvent: {},
+  }));
+  check(7);
+  expect(textDrawn(fast).split("  ")[1]).not.toBe(textDrawn(slow).split("  ")[1]);
+  await hover(6);
+  check(6);
+  await hover(2);
+  expect(textDrawn(fast)).toBe("RSI 2  0.00");
+  expect(textDrawn(slow)).toBe("RSI 5  —");
+  await hover(9);
+  check(9, true);
+  await act(async () => crosshair({ seriesData: new Map() }));
+  check(7);
+  const priorText = textDrawn(fast);
+  await render({ configs, bars: [...candles, { ...candles[0], time: bars[8].time }] });
+  check(8);
+  expect(textDrawn(fast)).not.toBe(priorText);
+  expect(mockCharts).toHaveLength(1);
 });
 
 test("drawing style edits affect the selected drawing, save it, and leave other drawings intact", async () => {

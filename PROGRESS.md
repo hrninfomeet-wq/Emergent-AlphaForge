@@ -1,5 +1,24 @@
 # AlphaForge chart terminal upgrade
 
+## Current work: chart display and watchlist, November 5
+
+This is a new, ordered five-item request on top of deployed release `cac2f8f`.
+The order-panel audit is read-only. No changes to order placement, other pages,
+backtesting or optimization; no orders while testing.
+
+| Item | Gate | State |
+|---|---|---|
+| A | Trace chart and Quick Trade entry/exit, auth, lines and broker contract; explain safe operator checks | Read-only review completed; broker modification payload differs from published spec |
+| B1 | RSI pane, 2 decimals at crosshair and latest plotted point | Done: 8 canvas tests; Chrome RSI 14/7 matched independent values on both hovered candles (49.88/36.58 and 41.78/32.68) and latest/leave (31.84/10.88) |
+| B2 | Three consecutive watchlist + clicks, focus/ticks/duplicates/reload | In progress |
+| B3 | Independent fullscreen drawer preference; live resize | Waiting |
+| B4 | Remember White/Default; preserve chart contrast and original Default | Waiting |
+| B5 | Diagnose then verify premium/discount on NIFTY, SENSEX and a stock, two intervals and both themes | Waiting |
+
+Critical risk is giving incorrect live-order guidance. A confirmed local intent
+is distinct from an OMS ID, fill or final cancellation. Keep deployment checks
+separate from real execution. Use isolated browser/fixture writes for the UI tests.
+
 Read this first on every resumed session, then docs/HANDOFF.md and the active item
 checkpoint. This is the user-requested execution ledger; docs/AGENT_TODO.md remains
 the project-wide work board. Existing completed chart feature: Lightweight Charts,

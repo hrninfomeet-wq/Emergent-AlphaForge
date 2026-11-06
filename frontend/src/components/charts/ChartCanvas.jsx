@@ -7,6 +7,7 @@ import { instrumentIdentity } from "../../lib/chartModel";
 import { amountText, finiteValue, pluginDrawings, positionFresh, priceText, readDrawingEnvelope, saveDrawingEnvelope, timeText } from "./chartPresentation";
 import ChartOrderLines from "./ChartOrderLines";
 import ChartAnalysisOverlays from "./ChartAnalysisOverlays";
+import { createRsiPaneLegend } from "./rsiPaneLegend";
 
 const TOOLS = [
   { id: null, label: "Select / crosshair", Icon: Crosshair },
@@ -126,7 +127,9 @@ export default function ChartCanvas({ instrument, timeframe, bars, configs, volu
         setSelection([...ids]);
         setSelectedStyle(ids.length ? manager.get(ids[0])?.style || null : null);
       }), manager.on("visibility", (visible) => setHidden(!visible)));
+      const cursor = { logical: null };
       const crosshair = (event) => {
+        cursor.logical = event.logical ?? null;
         setHover(event.time ? event.seriesData.get(candles) || null : null);
         // Mouse leave has no sourceEvent. Clear sibling cursors too; the runtime
         // guard below prevents programmatic clears from bouncing between tiles.
@@ -144,12 +147,14 @@ export default function ChartCanvas({ instrument, timeframe, bars, configs, volu
       };
       if (typeof ResizeObserver !== "undefined") { resize = new ResizeObserver(fitSize); resize.observe(host.current); }
       else { resizeFallback = fitSize; window.addEventListener("resize", fitSize); }
-      runtime.current = { chart, candles, manager, indicators: new Map(), priceLines: [], initialized: false, firstTime: null };
+      runtime.current = { chart, candles, manager, cursor, indicators: new Map(), priceLines: [], initialized: false, firstTime: null };
       setOrderRuntime({ chart, series: candles });
       syncCallbacks.current.onRuntime?.({ setCrosshair(time) {
         syncing.current = true;
         try {
           const bar = crosshairTarget(latest.current.bars, time, timeframe);
+          // The library omits crosshair events for programmatically positioned cursors.
+          cursor.logical = bar ? chart.timeScale().timeToIndex(bar.time) : null;
           if (bar) chart.setCrosshairPosition(bar.close, bar.time, candles);
           else chart.clearCrosshairPosition();
         } finally { syncing.current = false; }
@@ -205,10 +210,15 @@ export default function ChartCanvas({ instrument, timeframe, bars, configs, volu
             ...(item.indicatorId === "volume" ? { priceFormat: { type: "volume" } } : {}),
           }, pane);
           existing = { series, pane: item.pane };
+          if (item.indicatorId === "rsi") {
+            existing.legend = createRsiPaneLegend(series, r.cursor);
+            series.attachPrimitive(existing.legend);
+          }
           r.indicators.set(item.id, existing);
         } else if (existing.series.getPane().paneIndex() !== pane) existing.series.moveToPane(pane);
         existing.series.applyOptions({ color: item.color, title: item.name, ...(item.type === "line" ? { lineWidth: item.lineWidth || 1 } : {}) });
         existing.series.setData(item.data);
+        existing.legend?.update(item);
       }
       r.chart.panes().forEach((pane, index) => pane.setStretchFactor(index === 0 ? 4 : 1));
     } catch { setRenderError("An indicator could not be rendered. Disable the indicator and refresh history."); }
