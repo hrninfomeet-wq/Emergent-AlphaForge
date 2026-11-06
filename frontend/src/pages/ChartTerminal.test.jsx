@@ -79,3 +79,20 @@ test('option chain opens inside maximized workspace and hands the contract to th
  expect(container.querySelector('[data-testid="trade-context"]').textContent).toBe('OPTION');
  expect(container.querySelector('[data-testid="option-chain"]')).toBeNull();
 });
+
+test('fullscreen drawer persists independently of the normal watchlist', async () => {
+ const button = label => container.querySelector('[aria-label="' + label + '"]');
+ const click = async label => act(async () => button(label).click());
+ await act(async () => root.render(<ChartTerminal />));
+ await click('Maximize chart layout');
+ await click('Hide watchlist drawer');
+ expect(button('Show watchlist drawer').getAttribute('aria-expanded')).toBe('false');
+ await click('Exit full screen');
+ expect(container.querySelector('.chart-watchlist-toggle').getAttribute('aria-pressed')).toBe('true');
+ await act(async () => root.unmount()); root=createRoot(container);
+ await act(async () => root.render(<ChartTerminal />));
+ await click('Maximize chart layout');
+ expect(button('Show watchlist drawer')).not.toBeNull();
+ await click('Show watchlist drawer');
+ expect(button('Hide watchlist drawer').getAttribute('aria-expanded')).toBe('true');
+});
