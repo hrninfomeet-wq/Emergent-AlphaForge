@@ -10,8 +10,8 @@ backtesting or optimization; no orders while testing.
 |---|---|---|
 | A | Trace chart and Quick Trade entry/exit, auth, lines and broker contract; explain safe operator checks | Read-only review completed; broker modification payload differs from published spec |
 | B1 | RSI pane, 2 decimals at crosshair and latest plotted point | Done: 8 canvas tests; Chrome RSI 14/7 matched independent values on both hovered candles (49.88/36.58 and 41.78/32.68) and latest/leave (31.84/10.88) |
-| B2 | Three consecutive watchlist + clicks, focus/ticks/duplicates/reload | In progress |
-| B3 | Independent fullscreen drawer preference; live resize | Waiting |
+| B2 | Three consecutive watchlist + clicks, focus/ticks/duplicates/reload | Done: 3 confirmed fixture Mongo additions/reload, no duplicate PUT, search focus and ordinary toolbar selection checked, fixture restored; 20 tests passed |
+| B3 | Independent fullscreen drawer preference; live resize | In progress |
 | B4 | Remember White/Default; preserve chart contrast and original Default | Waiting |
 | B5 | Diagnose then verify premium/discount on NIFTY, SENSEX and a stock, two intervals and both themes | Waiting |
 

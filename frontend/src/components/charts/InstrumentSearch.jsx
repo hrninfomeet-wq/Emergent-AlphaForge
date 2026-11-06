@@ -3,7 +3,7 @@ import { Search, X } from "lucide-react";
 import { chartApi } from "../../lib/chartApi";
 import { INDEX_SHORTCUTS, readable } from "./chartPresentation";
 
-export default function InstrumentSearch({ onSelect, uniqueId, label = "Search NSE or BSE instruments" }) {
+export default function InstrumentSearch({ onSelect, uniqueId, label = "Search NSE or BSE instruments", savedKeys, addDisabled = false }) {
   const generatedId = useId();
   const listId = `${uniqueId || generatedId}-instruments`;
   const [query, setQuery] = useState("");
@@ -13,6 +13,7 @@ export default function InstrumentSearch({ onSelect, uniqueId, label = "Search N
   const [error, setError] = useState("");
   const [active, setActive] = useState(0);
   const wrapper = useRef(null);
+  const input = useRef(null);
   useEffect(() => {
     if (!open) return;
     let disposed = false;
@@ -34,10 +35,18 @@ export default function InstrumentSearch({ onSelect, uniqueId, label = "Search N
     document.addEventListener("pointerdown", outside);
     return () => document.removeEventListener("pointerdown", outside);
   }, []);
-  const choose = (item) => { onSelect(item); setQuery(""); setOpen(false); };
+  const choose = async (item) => {
+    if (savedKeys) {
+      if (!addDisabled && !savedKeys.has(item.instrument_key) && await onSelect(item)) input.current?.focus();
+      return;
+    }
+    onSelect(item);
+    setQuery("");
+    setOpen(false);
+  };
   return <div className="chart-search" ref={wrapper}>
     <Search size={17} />
-    <input aria-label={label} placeholder="Search symbol, strike or expiry…" role="combobox" aria-expanded={open} aria-controls={listId} aria-autocomplete="list"
+    <input ref={input} aria-label={label} placeholder="Search symbol, strike or expiry…" role="combobox" aria-expanded={open} aria-controls={listId} aria-autocomplete="list"
       aria-activedescendant={open && items[active] ? `${listId}-${active}` : undefined} value={query} onFocus={() => setOpen(true)}
       onChange={(event) => { setQuery(event.target.value); setOpen(true); }} onKeyDown={(event) => {
         if (event.key === "Escape") setOpen(false);
@@ -51,10 +60,17 @@ export default function InstrumentSearch({ onSelect, uniqueId, label = "Search N
       {loading && <div className="chart-search-message" role="status">Searching instruments…</div>}
       {error && <div className="chart-inline-warning" role="status">{error}</div>}
       <div id={listId} role="listbox" aria-label="Matching instruments">
-        {!loading && items.map((item, index) => <button type="button" role="option" aria-selected={index === active} id={`${listId}-${index}`}
-          key={`${item.instrument_key}:${item.expiry || ""}`} onClick={() => choose(item)} onMouseEnter={() => setActive(index)}>
-          <span><strong>{item.symbol}</strong><small>{item.name}{item.expiry ? ` · ${item.expiry}` : ""}</small></span><span className="chart-search-kind">{item.exchange}<small>{readable(item.kind)}</small></span>
-        </button>)}
+        {!loading && items.map((item, index) => {
+          const added = savedKeys?.has(item.instrument_key);
+          const action = added ? `${item.symbol} already in watchlist` : `Add ${item.symbol} to watchlist`;
+          return <button type="button" role="option" aria-selected={index === active} id={`${listId}-${index}`}
+            key={`${item.instrument_key}:${item.expiry || ""}`} aria-label={savedKeys ? action : undefined}
+            disabled={added || addDisabled} onClick={() => choose(item)} onMouseEnter={() => setActive(index)}>
+            <span><strong>{item.symbol}</strong><small>{item.name}{item.expiry ? ` · ${item.expiry}` : ""}</small></span>
+            <span className="chart-search-kind">{item.exchange}<small>{readable(item.kind)}</small></span>
+            {savedKeys && <span className={`chart-watchlist-add-icon${added ? " is-added" : ""}`} aria-hidden="true">{added ? "✓" : "+"}</span>}
+          </button>;
+        })}
         {!loading && !items.length && <div className="chart-search-message">No matching instruments. Try a symbol or expiry.</div>}
       </div>
     </div>}

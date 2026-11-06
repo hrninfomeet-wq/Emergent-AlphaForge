@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import InstrumentSearch from "./InstrumentSearch";
 import useChartWatchlist, { watchlistQuote } from "./useChartWatchlist";
@@ -19,6 +19,8 @@ export default function ChartWatchlist({ activeInstrument, onSelect, onOptionCha
   const [adding, setAdding] = useState(false), [editingName, setEditingName] = useState(false), [editingRow, setEditingRow] = useState(null);
   const addButton = useRef(null), dialog = useRef(null), dialogId = useId();
   const disabled = loading || saving;
+  const savedKeys = useMemo(() => new Set(watchlist?.items.map(item => item.instrument.instrument_key)), [watchlist]);
+  const full = savedKeys.size >= 200;
   useEffect(() => {
     if (!adding) return undefined;
     const returnFocus = addButton.current;
@@ -41,7 +43,7 @@ export default function ChartWatchlist({ activeInstrument, onSelect, onOptionCha
     </header>
     {editingName && watchlist && <LabelEditor key={`name-${watchlist.revision}`} label={watchlist.name} name="Watchlist name" onSave={state.rename} onCancel={() => setEditingName(false)} disabled={disabled} />}
     <div className="chart-watchlist-controls"><span>{watchlist?.items.length ?? 0} / 200</span>
-      <button type="button" aria-label="Add symbol" ref={addButton} disabled={!watchlist || disabled || watchlist.items.length >= 200} onClick={() => setAdding(true)}><Plus size={13} /> Add symbol</button>
+      <button type="button" aria-label="Add symbol" ref={addButton} disabled={!watchlist || disabled || full} onClick={() => setAdding(true)}><Plus size={13} /> Add symbol</button>
     </div>
     <div className="chart-watchlist-message" role="status" aria-live="polite">{saving ? "Saving watchlist…" : loading ? "Loading saved watchlist…" : error ? "Saved state requires review" : watchlist ? "Saved on server" : "Saved list unavailable"}</div>
     {error && <div className="chart-watchlist-error" role="alert">{error}</div>}
@@ -77,8 +79,8 @@ export default function ChartWatchlist({ activeInstrument, onSelect, onOptionCha
     {adding && <div className="chart-watchlist-modal-backdrop" onClick={(event) => { if (event.target === event.currentTarget && !saving) setAdding(false); }}>
       <div ref={dialog} className="chart-watchlist-modal" role="dialog" aria-modal="true" aria-labelledby={dialogId} onKeyDown={trapDialog}>
         <div className="chart-watchlist-modal-title"><h3 id={dialogId}>Add to {watchlist?.name}</h3><button type="button" disabled={saving} aria-label="Close add symbol" onClick={() => setAdding(false)}><X size={17} /></button></div>
-        <InstrumentSearch label="Search instruments to add to watchlist" onSelect={async (instrument) => { if (await state.add(instrument)) setAdding(false); }} />
-        <p>Select an instrument to save it in your watchlist.</p>
+        <InstrumentSearch label="Search instruments to add to watchlist" savedKeys={savedKeys} addDisabled={disabled || full} onSelect={state.add} />
+        {full && <p role="status">Watchlist is full. Remove an instrument before adding another.</p>}
         {error && <div className="chart-watchlist-error" role="alert">{error}</div>}
         {saving && <p role="status">Saving instrument…</p>}
       </div>

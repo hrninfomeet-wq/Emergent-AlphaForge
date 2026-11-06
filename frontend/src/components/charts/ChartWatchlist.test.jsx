@@ -44,16 +44,65 @@ test("user can rename list and label, reorder, remove and choose a chart through
   expect(api.save).toHaveBeenCalledTimes(4); expect(container.querySelector('[aria-label*="option chain"]')).toBeNull();
 });
 
-test("add dialog reuses instrument search with independent ARIA ids and saves chosen instrument", async () => {
-  await act(async () => root.render(<><InstrumentSearch onSelect={jest.fn()} /><ChartWatchlist activeInstrument={a} onSelect={onSelect} /></>));
+test("three additions preserve the search, results and input focus; saved results cannot be added twice", async () => {
+  server.items = [];
+  const chooseChart = jest.fn();
+  await act(async () => root.render(<><InstrumentSearch onSelect={chooseChart} /><ChartWatchlist activeInstrument={a} onSelect={onSelect} /></>));
   await click("Add symbol");
   const searches = [...container.querySelectorAll('[role="combobox"]')]; expect(searches).toHaveLength(2);
   expect(searches[0].getAttribute("aria-controls")).not.toBe(searches[1].getAttribute("aria-controls"));
   expect(document.activeElement).toBe(searches[1]);
+  await input("Search instruments to add to watchlist", "index");
   await act(async () => jest.advanceTimersByTime(230));
-  await act(async () => [...container.querySelectorAll('[role="option"]')].find((option) => option.textContent.includes("SENSEX")).click());
-  expect(container.querySelector('[role="dialog"]')).toBeNull(); expect(find("Load SENSEX chart")).not.toBeNull(); expect(container.textContent).toContain("3 / 200");
+  const dialog = container.querySelector('[role="dialog"]');
+  const results = [...dialog.querySelectorAll('[role="option"]')];
+  expect(results).toHaveLength(3);
+  for (const [index, item] of INDEX_SHORTCUTS.entries()) {
+    const row = find(`Add ${item.symbol} to watchlist`);
+    expect(row).toBe(results[index]);
+    expect(row.textContent).toContain("+");
+    await act(async () => { row.focus(); row.click(); });
+    expect(dialog.isConnected).toBe(true);
+    expect(searches[1].value).toBe("index");
+    expect(document.activeElement).toBe(searches[1]);
+    expect([...dialog.querySelectorAll('[role="option"]')]).toEqual(results);
+    expect(row.textContent).toContain("✓");
+    expect(row.disabled).toBe(true);
+    await act(async () => row.click());
+    expect(api.save).toHaveBeenCalledTimes(index + 1);
+    expect(find(`Load ${item.symbol} chart`)).not.toBeNull();
+  }
+  expect(chartApi.instruments).toHaveBeenCalledTimes(1);
+  expect(chooseChart).not.toHaveBeenCalled();
+  expect(onSelect).not.toHaveBeenCalled();
+  await click("Close add symbol");
   expect(document.activeElement).toBe(find("Add symbol"));
+  await act(async () => searches[0].focus());
+  await act(async () => jest.advanceTimersByTime(230));
+  const normalResult = container.querySelector('[role="option"]');
+  expect(normalResult.textContent).not.toMatch(/[+✓]/);
+  await act(async () => normalResult.click());
+  expect(chooseChart).toHaveBeenCalledWith(a);
+  expect(searches[0].getAttribute("aria-expanded")).toBe("false");
+});
+
+test("keyboard addition reloads a conflicting revision and retries only on another Enter", async () => {
+  api.save.mockRejectedValueOnce({ response: { status: 409 } });
+  await render(); await click("Add symbol");
+  const search = find("Search instruments to add to watchlist");
+  const key = keyName => act(async () => search.dispatchEvent(new KeyboardEvent("keydown", { key: keyName, bubbles: true, cancelable: true })));
+  await act(async () => jest.advanceTimersByTime(230));
+  await key("Enter"); // NIFTY is already saved.
+  expect(api.save).not.toHaveBeenCalled();
+  await key("ArrowDown"); await key("ArrowDown"); await key("Enter");
+  expect(container.querySelector('[role="dialog"]').textContent).toContain("Watchlist changed in another window");
+  expect(api.get).toHaveBeenCalledTimes(2);
+  expect(api.save).toHaveBeenCalledTimes(1);
+  expect(find("Add SENSEX to watchlist").disabled).toBe(false);
+  await key("Enter");
+  expect(find("SENSEX already in watchlist").disabled).toBe(true);
+  expect(api.save).toHaveBeenCalledTimes(2);
+  expect(document.activeElement).toBe(search);
 });
 
 test("price, previous-close percentage and unavailable identity reason remain explicit", async () => {
