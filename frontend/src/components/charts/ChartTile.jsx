@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, RefreshCw, SlidersHorizontal } from 'lucide-react';
+import { ChevronLeft, Maximize2, Minimize2, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import ChartCanvas from './ChartCanvas';
 import IndicatorSettings from './IndicatorSettings';
 import useChartData from './useChartData';
@@ -9,7 +9,7 @@ import { defaultAnalysisSettings, normalizeAnalysisSettings } from '../../lib/ch
 import { matchingPositions, priceText, readable, sessionQuote, streamFreshness, TIMEFRAMES, timeText } from './chartPresentation';
 import { instrumentIdentity } from '../../lib/chartModel';
 
-export default function ChartTile({ tile, chartBackground, index, active, onActivate, onChange, onData, onRuntime, onCrosshair, now, origin, showPositions, trading, tradingRows }) {
+export default function ChartTile({ tile, chartBackground, index, active, expanded = false, onToggleExpanded, onActivate, onChange, onData, onRuntime, onCrosshair, now, origin, showPositions, trading, tradingRows }) {
   const data = useChartData(tile.instrument, tile.timeframe, { positionsEnabled: active });
   const [settings, setSettings] = useState(false);
   const [tools, setTools] = useState(false);
@@ -26,13 +26,13 @@ export default function ChartTile({ tile, chartBackground, index, active, onActi
   const freshness = streamFreshness(data.snapshot, data.transport, data.snapshotAt, now);
   const quote = sessionQuote(data.snapshot, selected.instrument_key, data.bars[data.bars.length - 1], now);
   const warnings = [...new Set([...(data.warnings || []), ...(data.snapshot?.warnings || [])].filter(Boolean))];
-  return <section className={`chart-workspace chart-tile ${active ? 'chart-tile-active' : ''} ${tools ? 'chart-tile-tools-open' : ''}`} onPointerDownCapture={onActivate} onFocusCapture={onActivate} aria-label={`Chart ${index + 1}: ${selected.symbol}`} data-testid={`chart-tile-${index}`}>
+  return <section className={`chart-workspace chart-tile ${active ? 'chart-tile-active' : ''} ${tools ? 'chart-tile-tools-open' : ''}${expanded ? ' chart-tile-fullscreen' : ''}`} onPointerDownCapture={onActivate} onFocusCapture={onActivate} aria-label={`Chart ${index + 1}: ${selected.symbol}`} data-testid={`chart-tile-${index}`}>
     <div className="chart-instrument-header"><div className="chart-instrument-title"><span className="chart-instrument-badge">{selected.exchange}</span><div><h2>{selected.symbol}</h2><p>{selected.name} · {readable(selected.kind)}{selected.expiry ? ` · ${selected.expiry}` : ''}</p></div></div>
       <div className="chart-instrument-price"><strong>{quote.price === null ? '—' : priceText(quote.price)}</strong><span aria-label="Session change" title={quote.title} className={quote.change > 0 ? 'chart-positive' : quote.change < 0 ? 'chart-negative' : ''}>{quote.text}</span></div>
       <div className={`chart-status ${freshness.tone}`}><i />{freshness.label}{freshness.age != null && <small>· {Math.floor(freshness.age / 1000)}s</small>}</div>
     </div>
     <div className="chart-timeframe-bar"><div className="chart-timeframes" role="group" aria-label={`Chart ${index + 1} timeframe`}>{TIMEFRAMES.map(value => <button type="button" key={value} aria-pressed={tile.timeframe === value} className={tile.timeframe === value ? 'active' : ''} onClick={() => onChange({ timeframe: value })}>{value}</button>)}</div>
-      <div className="chart-data-actions"><button type="button" className="chart-compact-tools-toggle" aria-expanded={tools} onClick={() => setTools(value => !value)}>Tools</button><button type="button" className={settings ? 'active' : ''} aria-expanded={settings} onClick={() => setSettings(value => !value)}><SlidersHorizontal size={14} />Indicators <span className="chart-count">{tile.configs.filter(row => row.enabled).length}</span></button><button type="button" aria-label="Refresh chart history and positions" disabled={data.loading || data.refreshing} onClick={data.refresh}><RefreshCw size={14} className={data.refreshing ? 'chart-spin' : ''} /></button></div>
+      <div className="chart-data-actions"><button type="button" className="chart-fullscreen-tile" onClick={onToggleExpanded} aria-label={expanded ? `Restore chart ${index + 1} to layout` : `Full screen chart ${index + 1}`} aria-pressed={expanded} title={expanded ? 'Restore chart to layout (Esc)' : 'Expand this chart to fill the window'}>{expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button><button type="button" className="chart-compact-tools-toggle" aria-expanded={tools} onClick={() => setTools(value => !value)}>Tools</button><button type="button" className={settings ? 'active' : ''} aria-expanded={settings} onClick={() => setSettings(value => !value)}><SlidersHorizontal size={14} />Indicators <span className="chart-count">{tile.configs.filter(row => row.enabled).length}</span></button><button type="button" aria-label="Refresh chart history and positions" disabled={data.loading || data.refreshing} onClick={data.refresh}><RefreshCw size={14} className={data.refreshing ? 'chart-spin' : ''} /></button></div>
     </div>
     {settings && <IndicatorSettings configs={tile.configs} setConfigs={value => onChange({ configs: typeof value === 'function' ? value(tile.configs) : value })} volumeAvailable={data.volumeAvailable} timeframe={tile.timeframe} onClose={() => setSettings(false)} />}
     <div className="chart-data-actions"><button type="button" aria-expanded={analysisOpen} onClick={() => setAnalysisOpen(value => !value)}>Research overlays &amp; forecast</button></div>

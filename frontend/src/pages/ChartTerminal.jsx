@@ -24,6 +24,7 @@ export default function ChartTerminal() {
   const terminal = useRef(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [windowMaximized, setWindowMaximized] = useState(false);
+  const [expandedChart, setExpandedChart] = useState(null);
   const [fullscreenError, setFullscreenError] = useState('');
   const [initial] = useState(() => { let indicators; try { indicators = readIndicatorSettings(window.localStorage).configs; } catch { indicators = undefined; } try { return readLayout(window.localStorage, indicators); } catch { return readLayout(null, indicators); } });
   const [state, setState] = useState(initial.state);
@@ -36,18 +37,44 @@ export default function ChartTerminal() {
   const [now, setNow] = useState(Date.now);
   const runtimes = useRef(new Map());
   useEffect(() => {
-    const changed = () => setFullscreen(document.fullscreenElement === terminal.current);
+    const changed = () => {
+      setFullscreen(document.fullscreenElement === terminal.current);
+      if (!document.fullscreenElement) setExpandedChart(null);
+    };
     document.addEventListener('fullscreenchange', changed);
     return () => document.removeEventListener('fullscreenchange', changed);
   }, []);
+  const blockPageScroll = windowMaximized || expandedChart !== null;
   useEffect(() => {
-    if (!windowMaximized) return undefined;
+    if (!blockPageScroll) return undefined;
     const overflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    const escape = event => { if (event.key === 'Escape') setWindowMaximized(false); };
-    document.addEventListener('keydown', escape);
-    return () => { document.body.style.overflow = overflow; document.removeEventListener('keydown', escape); };
-  }, [windowMaximized]);
+    return () => { document.body.style.overflow = overflow; };
+  }, [blockPageScroll]);
+  useEffect(() => {
+    if (!windowMaximized && expandedChart === null) return undefined;
+    const keydown = event => {
+      // Shared confirmations own their keyboard handling and stay above the tile.
+      if (event.defaultPrevented || terminal.current?.querySelector('[role="dialog"]')) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (expandedChart !== null) setExpandedChart(null);
+        else setWindowMaximized(false);
+      } else if (event.key === 'Tab' && expandedChart !== null) {
+        const tile = terminal.current?.querySelector(`[data-testid="chart-tile-${expandedChart}"]`);
+        const items = [...(tile?.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), a[href], [tabindex="0"]') || [])]
+          .filter(item => item.getClientRects().length);
+        const first = items[0], last = items[items.length - 1];
+        if (first && (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus();
+        }
+      }
+    };
+    document.addEventListener('keydown', keydown, true);
+    return () => document.removeEventListener('keydown', keydown, true);
+  }, [windowMaximized, expandedChart]);
   const maximized = fullscreen || windowMaximized;
   const normalWatchlistVisible = state.watchlistVisible !== false;
   const watchlistVisible = maximized ? (state.maximizedWatchlistVisible ?? normalWatchlistVisible) : normalWatchlistVisible;
@@ -97,7 +124,7 @@ export default function ChartTerminal() {
     </button> : <button type="button" className="chart-watchlist-toggle" aria-pressed={normalWatchlistVisible} onClick={() => setState(previous => ({...previous, watchlistVisible: previous.watchlistVisible === false}))}>Watchlist</button>}<div className="chart-layout-picker"><button type="button" aria-expanded={pickerOpen} aria-controls="chart-layout-menu" onClick={() => setPickerOpen(open => !open)}>Layout · {layout.count} {layout.count === 1 ? 'chart' : 'charts'} · {layout.label}</button>{pickerOpen && <div id="chart-layout-menu" className="chart-layout-menu" role="group" aria-label="Chart layouts">{[1, 2, 3, 4, 6].map(count => <div className="chart-layout-group" key={count}><strong>{count} {count === 1 ? 'chart' : 'charts'}</strong><div>{LAYOUTS.filter(item => item.count === count).map(item => <button type="button" key={item.id} aria-label={`${count} ${count === 1 ? 'chart' : 'charts'}: ${item.label}`} aria-pressed={item.id === state.layout} onClick={() => { selectLayout(item.id); setPickerOpen(false); }}><span className="chart-layout-preview" style={{ gridTemplateAreas: gridTemplate(item), gridTemplateColumns: `repeat(${item.areas[0].length}, 1fr)` }}>{Array.from({ length: item.count }, (_, i) => <i key={i} style={{ gridArea: `tile${i}` }} />)}</span><small>{item.label}</small></button>)}</div></div>)}</div>}</div><label><input type="checkbox" checked={state.syncSymbol} onChange={event => { const enabled = event.target.checked; setState(previous => ({ ...previous, syncSymbol: enabled, tiles: enabled ? previous.tiles.map(tile => ({ ...tile, instrument: previous.tiles[previous.active].instrument })) : previous.tiles })); }} /> Sync symbol</label><label><input type="checkbox" checked={state.syncCrosshair} onChange={event => setState(previous => ({ ...previous, syncCrosshair: event.target.checked }))} /> Sync crosshair</label><span>Active chart {state.active + 1} · search and trading apply here</span></div>
     {(warning || fullscreenError) && <div className="chart-inline-warning" role="status">{[warning, fullscreenError].filter(Boolean).join(' · ')}</div>}
     <div className="chart-terminal-body">{watchlistVisible && <ChartWatchlist activeInstrument={selected} onOptionChain={setChainInstrument} onSelect={instrument => changeTile(state.active, {instrument})} />}<div className="chart-terminal-main"><div className="chart-grid-scroll"><div className={`chart-layout-grid ${layout.count > 1 ? 'chart-layout-multi' : 'chart-layout-single'}`} style={{ gridTemplateAreas: gridTemplate(layout), gridTemplateColumns: `repeat(${layout.areas[0].length}, minmax(0, 1fr))`, minWidth: layout.count > 1 ? `max(100%, ${layout.areas[0].length * 380}px)` : undefined }}>
-      {state.tiles.slice(0, layout.count).map((tile, index) => <VisibleTile key={index} active={state.active === index} area={`tile${index}`}><ChartTile tile={tile} chartBackground={state.chartBackground} index={index} active={state.active === index} onActivate={() => setState(previous => previous.active === index ? previous : { ...previous, active: index })} onChange={patch => changeTile(index, patch)} onData={receiveData} onRuntime={runtime => runtime ? runtimes.current.set(index, runtime) : runtimes.current.delete(index)} onCrosshair={time => syncCrosshair(index, time)} now={now} origin={origin} showPositions={showPositions} trading={trading} tradingRows={tradingRows} /></VisibleTile>)}
+      {state.tiles.slice(0, layout.count).map((tile, index) => <VisibleTile key={index} active={state.active === index} area={`tile${index}`}><ChartTile tile={tile} chartBackground={state.chartBackground} index={index} active={state.active === index} expanded={expandedChart === index} onToggleExpanded={() => { setState(previous => previous.active === index ? previous : { ...previous, active: index }); setExpandedChart(previous => previous === index ? null : index); }} onActivate={() => setState(previous => previous.active === index ? previous : { ...previous, active: index })} onChange={patch => changeTile(index, patch)} onData={receiveData} onRuntime={runtime => runtime ? runtimes.current.set(index, runtime) : runtimes.current.delete(index)} onCrosshair={time => syncCrosshair(index, time)} now={now} origin={origin} showPositions={showPositions} trading={trading} tradingRows={tradingRows} /></VisibleTile>)}
     </div></div>
     <ChartTrading instrument={selected} lastPrice={quote.price} trading={{ ...trading, rows: tradingRows }} />
     <ChartPositions positions={positions} positionsAt={validData?.positionsAt} now={now} warnings={validData?.positionWarnings || []} error={validData?.positionError || ''} origin={origin} setOrigin={setOrigin} visible={showPositions} setVisible={setShowPositions} />

@@ -7,7 +7,7 @@
 
 .chart-terminal-window-maximized{position:fixed;inset:0;z-index:90;max-width:none;margin:0}.chart-terminal-maximized .chart-command-bar{flex-direction:row;align-items:center;gap:8px}.chart-terminal-maximized .chart-shortcuts{flex-wrap:nowrap}.chart-terminal-maximized .chart-grid-scroll{min-height:calc(100vh - 115px)}
 
-.chart-compact-tools-toggle{display:none!important}.chart-terminal-maximized .chart-compact-tools-toggle{display:inline-flex!important}.chart-terminal-maximized .chart-layout-multi .chart-tile:not(.chart-tile-tools-open) .chart-canvas-toolbar,.chart-terminal-maximized .chart-layout-multi .chart-tile:not(.chart-tile-tools-open) .chart-drawing-style{display:none}.chart-terminal-maximized .chart-layout-multi .chart-instrument-header{padding:5px 8px;gap:7px}.chart-terminal-maximized .chart-layout-multi .chart-instrument-badge{display:none}.chart-terminal-maximized .chart-layout-multi .chart-instrument-title h2{font-size:12px}.chart-terminal-maximized .chart-layout-multi .chart-instrument-price>strong{font-size:13px}.chart-terminal-maximized .chart-layout-multi .chart-status{padding:3px}.chart-terminal-maximized .chart-layout-multi .chart-ohlc{min-height:24px;font-size:9px;gap:6px}.chart-terminal-maximized .chart-layout-multi .chart-inline-warning{padding:3px 6px;font-size:9px}.chart-terminal-maximized .chart-layout-multi .chart-canvas-wrap{min-height:135px}.chart-terminal-maximized .chart-tile-slot{min-height:280px}.chart-terminal-maximized .chart-layout-multi .chart-history-status{flex-wrap:nowrap}.chart-terminal-maximized .chart-layout-multi .chart-history-status>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chart-compact-tools-toggle{display:none!important}.chart-terminal-maximized .chart-compact-tools-toggle{display:inline-flex!important}.chart-terminal-maximized .chart-layout-multi .chart-tile:not(.chart-tile-tools-open):not(.chart-tile-fullscreen) .chart-canvas-toolbar,.chart-terminal-maximized .chart-layout-multi .chart-tile:not(.chart-tile-tools-open):not(.chart-tile-fullscreen) .chart-drawing-style{display:none}.chart-terminal-maximized .chart-layout-multi .chart-instrument-header{padding:5px 8px;gap:7px}.chart-terminal-maximized .chart-layout-multi .chart-instrument-badge{display:none}.chart-terminal-maximized .chart-layout-multi .chart-instrument-title h2{font-size:12px}.chart-terminal-maximized .chart-layout-multi .chart-instrument-price>strong{font-size:13px}.chart-terminal-maximized .chart-layout-multi .chart-status{padding:3px}.chart-terminal-maximized .chart-layout-multi .chart-ohlc{min-height:24px;font-size:9px;gap:6px}.chart-terminal-maximized .chart-layout-multi .chart-inline-warning{padding:3px 6px;font-size:9px}.chart-terminal-maximized .chart-layout-multi .chart-canvas-wrap{min-height:135px}.chart-terminal-maximized .chart-tile-slot{min-height:280px}.chart-terminal-maximized .chart-layout-multi .chart-history-status{flex-wrap:nowrap}.chart-terminal-maximized .chart-layout-multi .chart-history-status>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 .chart-terminal-maximized .chart-layout-multi .chart-timeframes button{min-width:21px;padding:3px;font-size:9px}.chart-terminal-maximized .chart-layout-multi .chart-data-actions button{padding:3px;font-size:9px}.chart-terminal-maximized .chart-layout-multi .chart-timeframe-bar{gap:3px}.chart-terminal-maximized .chart-layout-multi .chart-ohlc{flex-wrap:nowrap;white-space:nowrap;overflow:hidden}.chart-terminal-maximized .chart-layout-multi .chart-indicator-legend{padding:4px 8px}
 
@@ -34,3 +34,16 @@
 .chart-surface-white .chart-order-handle.stop_price { border-color: #b52742; }
 .chart-surface-white .chart-order-handle.target_price { border-color: #08745d; }
 .chart-surface-white .chart-order-handle.entry_price { border-color: #574b98; }
+
+/* Keep the tile in the terminal DOM so shared confirmation dialogs remain above it. */
+.chart-terminal .chart-tile.chart-tile-fullscreen{position:fixed;inset:0;z-index:95;width:100vw;height:100vh;height:100dvh;box-sizing:border-box;border-radius:0;display:flex;flex-direction:column;overflow:auto;overscroll-behavior:contain}
+.chart-terminal .chart-tile-fullscreen> :not(.chart-surface){flex-shrink:0}
+.chart-terminal .chart-tile-fullscreen .chart-surface{flex:1;min-height:360px}
+.chart-terminal .chart-tile-fullscreen .chart-canvas-wrap{flex:1;min-height:240px}
+.chart-terminal .chart-tile-fullscreen .chart-canvas{position:absolute;inset:0;height:100%;min-height:0}
+.chart-terminal .chart-tile-fullscreen .chart-canvas-footer{display:flex}
+.chart-terminal .chart-tile-fullscreen .chart-timeframes button,.chart-terminal .chart-tile-fullscreen .chart-data-actions button{font-size:11px;padding:7px 10px}
+.chart-terminal .chart-tile-fullscreen .chart-instrument-title h2{font-size:16px}
+.chart-terminal .chart-tile-fullscreen .chart-instrument-price>strong{font-size:18px}
+.chart-terminal .chart-fullscreen-tile[aria-pressed=true]{background:#29375b;color:#dce5ff}
+.chart-terminal .chart-fullscreen-tile:focus-visible{outline:2px solid #a8bcff;outline-offset:1px}

@@ -9,9 +9,10 @@ jest.mock('../components/charts/useChartTrading', () => instrument => { mockTrad
 jest.mock('../components/charts/ChartTrading', () => ({ instrument }) => <div data-testid="trade-context">{instrument.symbol}</div>);
 jest.mock('../components/charts/ChartPositions', () => () => null);
 jest.mock('../components/charts/InstrumentSearch', () => ({ onSelect }) => <button onClick={() => onSelect({ instrument_key: 'CUSTOM', symbol: 'CUSTOM', exchange: 'NSE', kind: 'index' })}>Custom</button>);
-jest.mock('../components/charts/ChartTile', () => ({ tile, index, active, onActivate, onChange }) => <div data-testid={`mock-tile-${index}`} onClick={onActivate}>{tile.instrument.symbol}/{tile.timeframe}/{String(active)}<button onClick={() => onChange({ timeframe:'1d' })}>Day</button></div>);
+jest.mock('../components/charts/ChartTile', () => ({ tile, index, active, expanded, onActivate, onChange, onToggleExpanded }) => <div data-testid={`mock-tile-${index}`} onClick={onActivate}>{tile.instrument.symbol}/{tile.timeframe}/{String(active)}<button onClick={() => onChange({ timeframe:'1d' })}>Day</button><button aria-pressed={expanded} onClick={onToggleExpanded}>{expanded ? 'Restore chart' : 'Fullscreen chart'}</button></div>);
 let container, root;
-beforeEach(() => { globalThis.IS_REACT_ACT_ENVIRONMENT = true; localStorage.clear(); mockTrading.mockClear(); container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container); });
+const setFullscreenElement = value => Object.defineProperty(document, 'fullscreenElement', { configurable: true, value });
+beforeEach(() => { globalThis.IS_REACT_ACT_ENVIRONMENT = true; localStorage.clear(); mockTrading.mockClear(); setFullscreenElement(null); delete document.exitFullscreen; container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container); });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
 test('active tile controls the single shared trading context and settings persist across reload', async () => {
  await act(async () => root.render(<ChartTerminal />)); await act(async () => container.querySelector('.chart-layout-picker > button').click()); await act(async () => container.querySelector('[aria-label="2 charts: Columns"]').click());
@@ -95,4 +96,117 @@ test('fullscreen drawer persists independently of the normal watchlist', async (
  expect(button('Show watchlist drawer')).not.toBeNull();
  await click('Show watchlist drawer');
  expect(button('Hide watchlist drawer').getAttribute('aria-expanded')).toBe('true');
+});
+
+const click = element => act(async () => element.click());
+const buttonWithLabel = label => container.querySelector(`[aria-label="${label}"]`);
+const tileAt = index => container.querySelector(`[data-testid="mock-tile-${index}"]`);
+const fullscreenButton = tile => tile.querySelector('button[aria-pressed]');
+const pressEscape = () => act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
+
+async function renderColumns() {
+  await act(async () => root.render(<ChartTerminal />));
+  await click(container.querySelector('.chart-layout-picker > button'));
+  await click(buttonWithLabel('2 charts: Columns'));
+  return container.querySelector('[data-testid="chart-terminal"]');
+}
+
+async function maximizeTerminal(surface, native) {
+  if (native) {
+    surface.requestFullscreen = jest.fn(async () => {
+      setFullscreenElement(surface);
+      document.dispatchEvent(new Event('fullscreenchange'));
+    });
+    document.exitFullscreen = jest.fn();
+  } else {
+    surface.requestFullscreen = jest.fn(async () => { throw new Error('Fullscreen denied'); });
+  }
+  await click(buttonWithLabel('Maximize chart layout'));
+}
+
+test('each chart can enter and restore fullscreen while the layout and tile settings stay mounted', async () => {
+  await renderColumns();
+  const tiles = [tileAt(0), tileAt(1)];
+  await click(tiles[1].querySelector('button'));
+
+  for (const [index, tile] of tiles.entries()) {
+    await click(fullscreenButton(tile));
+    expect(fullscreenButton(tile).textContent).toBe('Restore chart');
+    expect(fullscreenButton(tiles[1 - index]).getAttribute('aria-pressed')).toBe('false');
+    expect(tile.textContent).toContain('/true');
+    expect(document.body.style.overflow).toBe('hidden');
+    await click(fullscreenButton(tile));
+    expect(fullscreenButton(tile).textContent).toBe('Fullscreen chart');
+    expect(tileAt(0)).toBe(tiles[0]);
+    expect(tileAt(1)).toBe(tiles[1]);
+    expect(document.body.style.overflow).toBe('');
+  }
+  expect(container.querySelector('.chart-layout-picker > button').textContent).toContain('2 charts · Columns');
+  expect(tiles[0].textContent).toContain('/1m/');
+  expect(tiles[1].textContent).toContain('/1d/');
+  expect(document.fullscreenElement).toBeNull();
+});
+
+test.each([['native', true], ['fallback', false]])('restoring a tile preserves the %s terminal maximization and its watchlist setting', async (_mode, native) => {
+  const surface = await renderColumns();
+  await maximizeTerminal(surface, native);
+  await click(buttonWithLabel('Hide watchlist drawer'));
+  const tile = tileAt(1);
+  await click(fullscreenButton(tile));
+  expect(fullscreenButton(tile).getAttribute('aria-pressed')).toBe('true');
+  await click(fullscreenButton(tile));
+  expect(tileAt(1)).toBe(tile);
+  expect(fullscreenButton(tile).getAttribute('aria-pressed')).toBe('false');
+  expect(surface.classList.contains('chart-terminal-maximized')).toBe(true);
+  expect(surface.classList.contains('chart-terminal-window-maximized')).toBe(!native);
+  expect(buttonWithLabel('Show watchlist drawer').getAttribute('aria-expanded')).toBe('false');
+  expect(document.fullscreenElement).toBe(native ? surface : null);
+  if (native) expect(document.exitFullscreen).not.toHaveBeenCalled();
+});
+
+test('Escape gives a trading dialog priority and restores one fallback layer at a time', async () => {
+  const surface = await renderColumns();
+  await maximizeTerminal(surface, false);
+  const tile = tileAt(1);
+  await click(fullscreenButton(tile));
+
+  const dialog = document.createElement('div');
+  dialog.setAttribute('role', 'dialog');
+  surface.querySelector('[data-testid="trade-context"]').appendChild(dialog);
+  const dismiss = jest.fn(() => dialog.remove());
+  document.addEventListener('keydown', dismiss, { once: true });
+  try {
+    await pressEscape();
+    expect(dismiss).toHaveBeenCalledTimes(1);
+    expect(fullscreenButton(tile).getAttribute('aria-pressed')).toBe('true');
+    expect(surface.classList.contains('chart-terminal-window-maximized')).toBe(true);
+  } finally {
+    document.removeEventListener('keydown', dismiss);
+    dialog.remove();
+  }
+
+  await pressEscape();
+  expect(fullscreenButton(tile).getAttribute('aria-pressed')).toBe('false');
+  expect(surface.classList.contains('chart-terminal-window-maximized')).toBe(true);
+  expect(document.body.style.overflow).toBe('hidden');
+  await pressEscape();
+  expect(surface.classList.contains('chart-terminal-window-maximized')).toBe(false);
+  expect(document.body.style.overflow).toBe('');
+});
+
+test('browser exit from native terminal fullscreen clears the expanded tile', async () => {
+  const surface = await renderColumns();
+  await maximizeTerminal(surface, true);
+  const tile = tileAt(1);
+  await click(fullscreenButton(tile));
+  expect(fullscreenButton(tile).getAttribute('aria-pressed')).toBe('true');
+
+  await act(async () => {
+    setFullscreenElement(null);
+    document.dispatchEvent(new Event('fullscreenchange'));
+  });
+  expect(surface.classList.contains('chart-terminal-maximized')).toBe(false);
+  expect(tileAt(1)).toBe(tile);
+  expect(fullscreenButton(tile).getAttribute('aria-pressed')).toBe('false');
+  expect(document.body.style.overflow).toBe('');
 });

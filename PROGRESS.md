@@ -1,5 +1,27 @@
 # AlphaForge chart terminal upgrade
 
+## In progress: individual chart full screen, November 19
+
+Requested: add a button in each chart's timeframe toolbar. Expand that chart from
+normal or maximized layouts, then restore without losing layout, symbols,
+timeframes, indicators or drawings. No order-path/backend changes or real orders.
+
+1. Inspect and implement scoped tile full screen — done when the selected tile
+   fills the viewport and its existing chart instance stays mounted (implemented).
+2. Verify normal/maximized, native/fallback, Restore/Escape — done when the
+   original grid and settings return and no duplicate canvas/stream is created.
+3. Build and deploy frontend only — done when served source and Chrome controls
+   match, with backend/watchdog/Mongo IDs and start times unchanged.
+
+Critical part (cost: redone work): preserving chart instances and outer fullscreen
+state. Independent source review delegated; root owns implementation and rollout.
+Implementation checkpoint: viewport overlay preserves sibling confirmation dialogs; native
+fullscreen on a tile was rejected because it hides those dialogs. The independent
+review is complete. 11 terminal Jest tests passed, including node/settings preservation,
+native/fallback outer restore, modal Escape priority and browser fullscreen exit.
+Next: production build, isolated Chrome geometry/dialog checks, then frontend-only rollout.
+Resume here, not from the completed B1-B5 work below. Preserve unrelated dirty files.
+
 ## Completed: chart display and watchlist, November 18
 
 This is a new, ordered five-item request on top of deployed release `cac2f8f`.
