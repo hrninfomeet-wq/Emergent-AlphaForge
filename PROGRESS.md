@@ -1,6 +1,6 @@
 # AlphaForge chart terminal upgrade
 
-## Current work: chart display and watchlist, November 5
+## Completed: chart display and watchlist, November 18
 
 This is a new, ordered five-item request on top of deployed release `cac2f8f`.
 The order-panel audit is read-only. No changes to order placement, other pages,
@@ -15,11 +15,11 @@ backtesting or optimization; no orders while testing.
 | B4 | Remember White/Default; preserve chart contrast and original Default | Done: 17 focused tests passed; Chrome 6-state round-trip, persistence, preserved drawing JSON and exact Default raster restoration |
 | B5 | Diagnose then verify premium/discount on NIFTY, SENSEX and a stock, two intervals and both themes | Done: 12 before/after real-history replay views, all three labels/full-width bands; injected range refresh moved both bands; 21 selected tests passed |
 
-Resume checkpoint, 2026-11-18. B4 browser gate passed.
+Historical checkpoint before deployment, 2026-11-18. B4 browser gate passed.
 The prior pixel test was affected by Chrome canvas GPU-to-CPU readback switching,
 reproduced even without a theme change. Using willReadFrequently in the test
 made rendering deterministic and the strict Default comparison passed.
-Docker is stopped today. Finish B5 and prepare frontend-only release before startup.
+Docker was stopped at that checkpoint. B5 and the frontend-only rollout are now complete.
 
 Historical checkpoint, 2026-11-12. B1-B3 commits remain intact on local main.
 B4 paint implementation is present, final browser gate in progress. B5 capture
@@ -45,11 +45,34 @@ The final two Jest runs passed 31 tests across seven suites. Source fingerprint
 acbe8be7ea077871288c7017adbbb11a9990aebda62d9c52020f6729a1c0a2e8.
 Prepared context C:/Users/haroo/AppData/Local/Temp/alphaforge-chart-frontend-j4jw5gnd/context,
 implementation revision 113ab161cb9ec9ba83edbc48b28d5299e706c3b4.
-Deployment is pending Docker startup and the user's fresh flat-account response.
+Deployment completed 2026-11-18 after the user reported Docker and the app running.
+Only frontend was recreated, using --no-build --no-deps --pull never. Its image is
+e5c5fcf4f6cdda6a1c5bce85cc8d7a2e695de18dcb033ec59920b92b2e190b07;
+served main.aa7ea55c.js contains the expected source fingerprint above (HTTP 200).
+Backend, conditional watchdog and Mongo IDs AND start times stayed unchanged:
+fddfcd882a67 / 04:31:34.600875028Z, 9c0703475b60 / 04:31:34.597996717Z,
+eb10b0b16368 / 04:31:34.582172059Z, all on 2026-11-18. No guard interruption.
+Chrome's existing tab loaded the deployed source. White and Default both rendered
+RSI and labelled premium/discount bands on the user's current SENSEX option;
+the RSI pane changed with crosshair and returned to 63.07 on leave. Hiding the
+maximized watchlist changed chart width from 1192 to 1462 px. The hidden preference
+survived reload and re-entering full screen, while normal Watchlist stayed visible.
+White survived reload; Default was restored. Search showed existing SENSEX with
+a tick and other results with +. No production watchlist entries were changed.
+The final page keeps the user's selected SENSEX contract, normal layout, Default
+background and PAPER mode. The feed was disconnected during final verification;
+this does not certify a moving live session or broker execution.
+Screenshot: frontend/build/chart-qa/deployed-white-nov18.jpg (ignored evidence).
+Rollback image: alphaforge-chart-rollback-frontend:113ab16. Retag it as
+emergent-alphaforge-frontend:latest and recreate only frontend if needed.
 Prepared release helper frontend/build/chart-qa/release_frontend.py reuses the
 exact prior shipped source plus only committed chart changes. Frontend-only
-rollout intentionally creates a frontend/backend source-fingerprint mismatch
-until a separately authorized backend rebuild. No remote push.
+rollout creates an explicitly visible frontend/backend source-fingerprint mismatch
+until a separately authorized backend rebuild; the backend was deliberately left
+running. No backend, order-placement, other-page or backtest/optimizer code changes.
+Next: no implementation or deployment gate remains for B1-B5. Market-session and
+real-order checks remain separate, with real orders exclusively tested by the user.
+No remote push.
 
 Critical risk is giving incorrect live-order guidance. A confirmed local intent
 is distinct from an OMS ID, fill or final cancellation. Keep deployment checks

@@ -782,5 +782,5 @@ promotion-grade result.
 
 - [x] B1 RSI hover/latest values, B2 consecutive watchlist additions, B3 maximized drawer, B4 White/Default, B5 prominent current premium/discount bands. Integrated locally through 113ab16.
 - [x] 31 selected Jest tests passed in the final two runs. Browser evidence covers six real-history cases in two themes and a changed-range response.
-- [ ] Docker startup approval, frontend image deployment and normal Chrome verification. Docker was stopped on this resume; fresh flat-account confirmation requested.
+- [x] 2026-11-18 frontend-only rollout and existing Chrome verification completed. User reported Docker already running. Backend/watchdog/Mongo IDs and start times unchanged. Served main.aa7ea55c.js has source acbe8be7ea07; the visible FE/BE source mismatch is expected because backend was not restarted. Drawer persistence, White/Default, RSI/zone rendering and search ticks/+ checked; final page remains PAPER. No orders placed. See root PROGRESS.md for rollback and evidence.
 - Resume from root PROGRESS.md. Order logic and backtest/optimizer were excluded. Broker live testing remains operator-only.

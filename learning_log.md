@@ -1896,4 +1896,10 @@ See docs/chart-terminal/rollout-acceptance.md for the two-tab and restart checks
 - Core lesson: diagnose missing regions by checking both computed prices and rendered geometry. A valid range with equal start/end collapsed to one pixel.
 - Confirmed approach: replay identical real candles before/after, verify each symbol/timeframe/theme, then test a changed range response. Preserve confirmed swing prices and use a viewport-wide presentation layer.
 - Dead end: exact pixel assertions can drift when repeated canvas reads switch Chrome from GPU to CPU. The control experiment reproduced drift without any theme change. Test-only willReadFrequently made the raster comparison deterministic.
-- B1-B5 are implemented and verified in candidate Chrome. Docker startup/deployment is pending a fresh flat-account response. Order-placement and backtest/optimizer code were excluded.
+- B1-B5 are deployed and verified in the existing Chrome tab. The user had already started Docker; only frontend was recreated. Order-placement and backtest/optimizer code were excluded.
+
+## Chart frontend rollout lesson - 2026-11-18
+
+- Core lesson: a display-only release can preserve the running exit guard by rebuilding the exact shipped source plus the scoped frontend changes and recreating only frontend with --no-deps.
+- Confirmed approach: verify the served bundle fingerprint and compare backend, watchdog and database container IDs AND start times before/after. Keep an explicit rollback image. The badge truthfully reports the resulting FE/BE source mismatch.
+- Dead ends to avoid: rebuilding the unrelated dirty checkout, restarting the backend just to clear the build badge, or treating saved fullscreen drawer visibility as a promise that browsers restore native full screen after reload. Re-enter full screen to check that preference.
