@@ -13,7 +13,7 @@ backtesting or optimization; no orders while testing.
 | B2 | Three consecutive watchlist + clicks, focus/ticks/duplicates/reload | Done: 3 confirmed fixture Mongo additions/reload, no duplicate PUT, search focus and ordinary toolbar selection checked, fixture restored; 20 tests passed |
 | B3 | Independent fullscreen drawer preference; live resize | Done: native and fallback Chrome gained 270 px on the same canvas; normal and maximized settings survived browser restart; 9 unit checks passed |
 | B4 | Remember White/Default; preserve chart contrast and original Default | Done: 17 focused tests passed; Chrome 6-state round-trip, persistence, preserved drawing JSON and exact Default raster restoration |
-| B5 | Diagnose then verify premium/discount on NIFTY, SENSEX and a stock, two intervals and both themes | In progress: six real-history cases captured before fix, valid ranges but confirmation-bounded narrow bands and no labels |
+| B5 | Diagnose then verify premium/discount on NIFTY, SENSEX and a stock, two intervals and both themes | Done: 12 before/after real-history replay views, all three labels/full-width bands; injected range refresh moved both bands; 21 selected tests passed |
 
 Resume checkpoint, 2026-11-18. B4 browser gate passed.
 The prior pixel test was affected by Chrome canvas GPU-to-CPU readback switching,
@@ -30,6 +30,20 @@ Do not use the old sandbox TEMP environment to find November 6 evidence;
 its original absolute path is C:/Users/haroo/AppData/Local/Temp/alphaforge-b1-b5-chrome.
 Current Chrome user tab was on an expired November 9 option, now /charts.
 No order endpoints or broker authentication actions were invoked.
+
+Display acceptance completed 2026-11-18. B5 uses the original backend confirmed
+swing high/low and midpoint. Premium/discount alone extends across the viewport,
+participates in automatic price scaling, and has opaque-backed left labels to
+avoid EMA axis-title overlap. FVG/order-block time bounds are preserved.
+Evidence is in frontend/build/chart-qa/{before,after}-matrix.json and PNGs,
+using captured November 12 API histories for NIFTY/SENSEX/RELIANCE at 1m/5m.
+The range-change browser test injects a changed response into an isolated page.
+It is not a live market-session check. 21 Jest checks passed across five suites.
+Deployment is pending Docker startup and the user's fresh flat-account response.
+Prepared release helper frontend/build/chart-qa/release_frontend.py reuses the
+exact prior shipped source plus only committed chart changes. Frontend-only
+rollout intentionally creates a frontend/backend source-fingerprint mismatch
+until a separately authorized backend rebuild. No remote push.
 
 Critical risk is giving incorrect live-order guidance. A confirmed local intent
 is distinct from an OMS ID, fill or final cancellation. Keep deployment checks

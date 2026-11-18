@@ -1,8 +1,39 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { createSeriesMarkers } from "lightweight-charts";
-import ChartAnalysisOverlays, { analysisVisuals } from "./ChartAnalysisOverlays";
+import ChartAnalysisOverlays, { analysisVisuals, AnalysisZonePrimitive } from "./ChartAnalysisOverlays";
 jest.mock("lightweight-charts", () => ({ createSeriesMarkers: jest.fn() }));
+
+test("current range spans the viewport even with same-bar or unloaded time anchors, while FVG stays bounded", () => {
+  const zones = [
+    { label: "Discount", low: 90, high: 100, start: 60, end: 60, color: "#22a67a" },
+    { label: "Premium", low: 100, high: 110, start: 60, end: 60, color: "#dd6b60" },
+  ];
+  const fvg = { low: 80, high: 85, start: 1, end: 2, color: "#abcdef" };
+  const visual = analysisVisuals({ overlays: { premium_discount: { zones }, fvg: { zones: [fvg] } } },
+    { overlays: { premium_discount: true, fvg: true } }, [], []);
+  const timeToCoordinate = jest.fn(time => time === 60 ? null : time * 10);
+  const series = { priceToCoordinate: price => 200 - price };
+  const primitive = new AnalysisZonePrimitive(visual.zones, "white");
+  primitive.attached({ chart: { timeScale: () => ({ timeToCoordinate }) }, series, requestUpdate() {} });
+  const context = Object.fromEntries(["save", "restore", "fillRect", "strokeRect", "beginPath", "moveTo", "lineTo", "stroke", "setLineDash", "fillText"].map(name => [name, jest.fn()]));
+  context.measureText = text => ({ width: text.length * 6 });
+  primitive.draw({ useBitmapCoordinateSpace: draw => draw({ context, bitmapSize: { width: 1000, height: 400 }, horizontalPixelRatio: 2, verticalPixelRatio: 2 }) });
+  expect(context.fillRect.mock.calls).toEqual([[0, 200, 1000, 20], [0, 180, 1000, 20], [20, 230, 20, 10]]);
+  expect(timeToCoordinate.mock.calls.flat()).toEqual([1, 2]);
+  expect(primitive.autoscaleInfo()).toEqual({ priceRange: { minValue: 90, maxValue: 110 } });
+  primitive.drawLabels({ useMediaCoordinateSpace: draw => draw({ context, mediaSize: { width: 500, height: 200 } }) });
+  expect(context.moveTo).toHaveBeenCalledWith(0, 100);
+  expect(context.lineTo).toHaveBeenCalledWith(500, 100);
+  expect(context.fillText.mock.calls.map(call => call[0])).toEqual(["Premium", "Equilibrium · 50%", "Discount"]);
+  // A newly confirmed range changes scale and geometry using the new prices.
+  const next = new AnalysisZonePrimitive(visual.zones.slice(0, 2).map(zone => ({ ...zone, high: zone.high + 20, low: zone.low + 20 })), "default");
+  next.attached({ chart: {}, series, requestUpdate() {} });
+  expect(next.autoscaleInfo()).toEqual({ priceRange: { minValue: 110, maxValue: 130 } });
+  next.drawLabels({ useMediaCoordinateSpace: draw => draw({ context, mediaSize: { width: 500, height: 200 } }) });
+  expect(context.moveTo).toHaveBeenLastCalledWith(0, 80);
+  expect(new AnalysisZonePrimitive([fvg]).autoscaleInfo()).toBeNull();
+});
 test("separate read-only renderer filters disabled groups and deduplicates strategy markers", () => {
   const event = { id: "e", time: 60, direction: "UP", text: "Research" };
   const visuals = analysisVisuals({ overlays: { fvg: { zones: [], lines: [{ price: 123 }], markers: [event] }, order_blocks: { lines: [{ price: 999 }] } } }, { overlays: { fvg: true }, strategyId: "ema" }, [event, { ...event, id: "outside", time: 1 }], [{ time: 60 }]);

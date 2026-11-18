@@ -26,6 +26,7 @@ export default function ChartAnalysisPanel({ settings: supplied, onChange, analy
     {(catalogError || error) && <p className="chart-analysis-warning" role="status">{catalogError || error}{stale ? " · STALE" : ""}</p>}
     {loading && <p role="status">Loading closed-bar research…</p>}
     {data && <div className="chart-analysis-meta">{stale ? "Stale research" : "Closed-bar research"} · Through {finiteValue(data.closed_through) ? `${timeText(data.closed_through)} IST` : "unavailable"} · {signals.length} strategy markers · Research only; markers are hypothetical, not fills.</div>}
+    {settings.overlays.premium_discount && <p className="chart-analysis-meta">Premium / Discount shows the current confirmed swing range across the chart. The midpoint is 50%. Panning displays this current reference range over earlier candles.</p>}
     {settings.strategyId && data?.strategy?.reason && <p>{data.strategy.reason}</p>}
     {settings.strategyId && latestSignal && <p aria-label="Latest strategy preview">Latest preview: {latestSignal.direction} · {timeText(latestSignal.time)} IST · {(latestSignal.reasons || []).join("; ") || latestSignal.text}</p>}
     {settings.forecast && <article className="chart-research-card" aria-label="Next-close research forecast">

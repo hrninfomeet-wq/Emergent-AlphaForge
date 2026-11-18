@@ -1889,3 +1889,11 @@ approach: put only the chart SSE endpoints behind the existing frontend nginx,
 then test both pages concurrently. Dead end: treating an isolated single-tab
 pass or a fast direct API request as proof of production browser behavior.
 See docs/chart-terminal/rollout-acceptance.md for the two-tab and restart checks.
+
+
+## Chart display completion checkpoint - 2026-11-18
+
+- Core lesson: diagnose missing regions by checking both computed prices and rendered geometry. A valid range with equal start/end collapsed to one pixel.
+- Confirmed approach: replay identical real candles before/after, verify each symbol/timeframe/theme, then test a changed range response. Preserve confirmed swing prices and use a viewport-wide presentation layer.
+- Dead end: exact pixel assertions can drift when repeated canvas reads switch Chrome from GPU to CPU. The control experiment reproduced drift without any theme change. Test-only willReadFrequently made the raster comparison deterministic.
+- B1-B5 are implemented and verified in candidate Chrome. Docker startup/deployment is pending a fresh flat-account response. Order-placement and backtest/optimizer code were excluded.
