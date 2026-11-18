@@ -1,10 +1,11 @@
+import { chartInk } from "./chartTheme";
 import { useLayoutEffect } from "react";
 import { createSeriesMarkers } from "lightweight-charts";
 
 const color = value => /^#[0-9a-f]{6}$/i.test(value || "") ? value : "#91a7e8";
 /** Generated price/time regions. No hit testing, drawing persistence or actions. */
 export class AnalysisZonePrimitive {
-  constructor(zones) { this.zones = zones; this.view = { zOrder: () => "bottom", renderer: () => ({ draw: target => this.draw(target) }) }; }
+  constructor(zones, theme) { this.theme = theme; this.zones = zones; this.view = { zOrder: () => "bottom", renderer: () => ({ draw: target => this.draw(target) }) }; }
   attached({ chart, series, requestUpdate }) { this.chart = chart; this.series = series; this.requestUpdate = requestUpdate; requestUpdate(); }
   detached() { this.chart = null; this.series = null; this.requestUpdate = null; }
   paneViews() { return [this.view]; }
@@ -16,7 +17,8 @@ export class AnalysisZonePrimitive {
         const x1 = this.chart.timeScale().timeToCoordinate(zone.start), x2 = this.chart.timeScale().timeToCoordinate(zone.end);
         const y1 = this.series.priceToCoordinate(zone.high), y2 = this.series.priceToCoordinate(zone.low);
         if ([x1, x2, y1, y2].some(value => value == null || !Number.isFinite(value))) continue;
-        context.fillStyle = `${color(zone.color)}22`; context.strokeStyle = `${color(zone.color)}88`;
+        const ink = chartInk(color(zone.color), this.theme);
+        context.fillStyle = `${ink}${this.theme === "white" ? "33" : "22"}`; context.strokeStyle = `${ink}88`;
         const x = Math.min(x1, x2) * hx, y = Math.min(y1, y2) * vy;
         const width = Math.max(1, Math.abs(x2 - x1) * hx), height = Math.max(1, Math.abs(y2 - y1) * vy);
         context.fillRect(x, y, width, height); context.strokeRect(x, y, width, height);
@@ -40,23 +42,23 @@ export function analysisVisuals(data, settings, signals, bars) {
   return { lines, zones, markers };
 }
 
-export default function ChartAnalysisOverlays({ chart, series, data, settings, signals = [], bars = [] }) {
+export default function ChartAnalysisOverlays({ chart, series, data, settings, signals = [], bars = [], theme = "default" }) {
   const barWindow = `${bars.length}|${bars[0]?.time}|${bars[bars.length - 1]?.time}`;
   useLayoutEffect(() => {
     if (!chart || !series || !data) return undefined;
     const visuals = analysisVisuals(data, settings, signals, bars);
-    const primitive = new AnalysisZonePrimitive(visuals.zones);
+    const primitive = new AnalysisZonePrimitive(visuals.zones, theme);
     const priceLines = [];
     let markers;
     try {
       series.attachPrimitive(primitive);
-      for (const line of visuals.lines) priceLines.push(series.createPriceLine({ price: line.price, title: String(line.label || "Research"), color: color(line.color), lineWidth: 1, lineStyle: 2, axisLabelVisible: false }));
-      markers = createSeriesMarkers(series, visuals.markers);
+      for (const line of visuals.lines) priceLines.push(series.createPriceLine({ price: line.price, title: String(line.label || "Research"), color: chartInk(color(line.color), theme), lineWidth: 1, lineStyle: 2, axisLabelVisible: false }));
+      markers = createSeriesMarkers(series, visuals.markers.map(marker => ({ ...marker, color: chartInk(marker.color, theme) })));
     } catch { /* Failed research graphics must not stop candles or execution controls. */ }
     return () => { markers?.detach(); series.detachPrimitive(primitive); priceLines.forEach(line => series.removePriceLine(line)); };
     // Prices can tick without changing the loaded marker times. Keep this layer
     // attached across quote-only updates; layout cleanup precedes chart removal.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chart, series, data, settings, signals, barWindow]);
+  }, [chart, series, data, settings, signals, barWindow, theme]);
   return null;
 }

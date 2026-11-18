@@ -12,8 +12,24 @@ backtesting or optimization; no orders while testing.
 | B1 | RSI pane, 2 decimals at crosshair and latest plotted point | Done: 8 canvas tests; Chrome RSI 14/7 matched independent values on both hovered candles (49.88/36.58 and 41.78/32.68) and latest/leave (31.84/10.88) |
 | B2 | Three consecutive watchlist + clicks, focus/ticks/duplicates/reload | Done: 3 confirmed fixture Mongo additions/reload, no duplicate PUT, search focus and ordinary toolbar selection checked, fixture restored; 20 tests passed |
 | B3 | Independent fullscreen drawer preference; live resize | Done: native and fallback Chrome gained 270 px on the same canvas; normal and maximized settings survived browser restart; 9 unit checks passed |
-| B4 | Remember White/Default; preserve chart contrast and original Default | In progress |
-| B5 | Diagnose then verify premium/discount on NIFTY, SENSEX and a stock, two intervals and both themes | Waiting |
+| B4 | Remember White/Default; preserve chart contrast and original Default | Done: 17 focused tests passed; Chrome 6-state round-trip, persistence, preserved drawing JSON and exact Default raster restoration |
+| B5 | Diagnose then verify premium/discount on NIFTY, SENSEX and a stock, two intervals and both themes | In progress: six real-history cases captured before fix, valid ranges but confirmation-bounded narrow bands and no labels |
+
+Resume checkpoint, 2026-11-18. B4 browser gate passed.
+The prior pixel test was affected by Chrome canvas GPU-to-CPU readback switching,
+reproduced even without a theme change. Using willReadFrequently in the test
+made rendering deterministic and the strict Default comparison passed.
+Docker is stopped today. Finish B5 and prepare frontend-only release before startup.
+
+Historical checkpoint, 2026-11-12. B1-B3 commits remain intact on local main.
+B4 paint implementation is present, final browser gate in progress. B5 capture
+is saved under ignored frontend/build/chart-qa: all six real API histories have
+600 bars and valid current swing ranges. SENSEX 5m has identical start/end,
+which yields a one-pixel zone in the existing renderer. No B5 fix yet.
+Do not use the old sandbox TEMP environment to find November 6 evidence;
+its original absolute path is C:/Users/haroo/AppData/Local/Temp/alphaforge-b1-b5-chrome.
+Current Chrome user tab was on an expired November 9 option, now /charts.
+No order endpoints or broker authentication actions were invoked.
 
 Critical risk is giving incorrect live-order guidance. A confirmed local intent
 is distinct from an OMS ID, fill or final cancellation. Keep deployment checks

@@ -1,7 +1,9 @@
+import { chartInk, chartPalette } from "./chartTheme";
+
 /** A top-layer series primitive follows its RSI pane through moves and resizes.
  * Lightweight Charts repaints this layer on both crosshair and data changes. */
 export function createRsiPaneLegend(series, cursor) {
-  let title, latestValue, color;
+  let title, latestValue, color, palette = chartPalette("default");
   const renderer = {
     draw(target) {
       const value = cursor.logical == null ? latestValue : series.dataByIndex(cursor.logical)?.value;
@@ -10,11 +12,11 @@ export function createRsiPaneLegend(series, cursor) {
         context.save();
         context.font = "600 12px Inter, system-ui, sans-serif";
         context.textBaseline = "top";
-        context.fillStyle = "#0c111b";
+        context.fillStyle = palette.background;
         context.fillRect(4, 3, context.measureText(text).width + 14, 19);
         context.fillStyle = color;
         context.fillRect(7, 7, 3, 10);
-        context.fillStyle = "#e7edf6";
+        context.fillStyle = palette.legendText;
         context.fillText(text, 14, 6);
         context.restore();
       });
@@ -23,9 +25,10 @@ export function createRsiPaneLegend(series, cursor) {
   const views = [{ zOrder: () => "top", renderer: () => renderer }];
   return {
     paneViews: () => views,
-    update(item) {
+    update(item, theme) {
       title = item.name;
-      color = item.color;
+      color = chartInk(item.color, theme);
+      palette = chartPalette(theme);
       latestValue = item.data.findLast(point => Number.isFinite(point.value))?.value;
     },
   };

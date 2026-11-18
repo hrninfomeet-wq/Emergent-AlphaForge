@@ -22,7 +22,7 @@ export const LAYOUTS = [
   { id: 'six-top', label: 'Large top', areas: [[0, 0, 0], [1, 2, 3], [4, 5, 5]] },
 ].map(layout => ({ ...layout, count: new Set(layout.areas.flat()).size }));
 export const LAYOUT_KEY = 'alphaforge.chart.layout.v1';
-export const defaultLayout = (configs = defaultIndicators()) => ({ version: 1, layout: 'one', active: 0, syncSymbol: false, syncCrosshair: false,
+export const defaultLayout = (configs = defaultIndicators()) => ({ version: 1, layout: 'one', chartBackground: 'default', active: 0, syncSymbol: false, syncCrosshair: false,
   tiles: Array.from({ length: 6 }, (_, i) => ({ instrument: INDEX_SHORTCUTS[i % INDEX_SHORTCUTS.length], timeframe: '1m', configs: JSON.parse(JSON.stringify(configs)), analysis: defaultAnalysisSettings() })) });
 const configsValid = configs => saveIndicatorSettings({ setItem() {} }, configs).ok;
 export function readLayout(storage, initialConfigs) {
@@ -38,7 +38,7 @@ export function readLayout(storage, initialConfigs) {
       state.tiles.every(tile => tile && tile.instrument && typeof tile.instrument.instrument_key === 'string' && tile.instrument.instrument_key.length > 0 &&
         typeof tile.instrument.symbol === 'string' && TIMEFRAMES.includes(tile.timeframe) && configsValid(tile.configs) && normalizeAnalysisSettings(tile.analysis));
     if (!valid) throw new Error('invalid layout');
-    return { state: { ...state, tiles: state.tiles.map(tile => ({ ...tile, analysis: normalizeAnalysisSettings(tile.analysis) })) }, writable: true, warning: '' };
+    return { state: { ...state, chartBackground: state.chartBackground === 'white' ? 'white' : 'default', tiles: state.tiles.map(tile => ({ ...tile, analysis: normalizeAnalysisSettings(tile.analysis) })) }, writable: true, warning: '' };
   } catch { return { state: fallback, writable: false, warning: 'Saved chart layout could not be read; it was left untouched. Changes stay in this tab.' }; }
 }
 export function saveLayout(storage, state) {

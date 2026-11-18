@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CandlestickSeries, ColorType, createChart, CrosshairMode, HistogramSeries, LineSeries, LineStyle } from "lightweight-charts";
+import { CandlestickSeries, createChart, CrosshairMode, HistogramSeries, LineSeries, LineStyle } from "lightweight-charts";
 import { DrawingManager } from "lightweight-charts-drawing";
 import { Crosshair, Minus, MoveVertical, ArrowUpRight, ArrowRight, ArrowUp, ArrowDown, Ruler, TrendingUp, Layers3, Trash2, Maximize, Minimize, ScanLine, Eye, EyeOff } from "lucide-react";
 import { computeIndicators } from "../../lib/chartIndicators";
@@ -8,6 +8,9 @@ import { amountText, finiteValue, pluginDrawings, positionFresh, priceText, read
 import ChartOrderLines from "./ChartOrderLines";
 import ChartAnalysisOverlays from "./ChartAnalysisOverlays";
 import { createRsiPaneLegend } from "./rsiPaneLegend";
+
+import { candlePaint, chartInk, chartPaint } from "./chartTheme";
+import { installDrawingTheme } from "./drawingTheme";
 
 const TOOLS = [
   { id: null, label: "Select / crosshair", Icon: Crosshair },
@@ -49,8 +52,10 @@ export function crosshairTarget(bars, time, timeframe) {
 
 /** Owns the imperative chart. A keyed page instance separates every contract
  * and timeframe; durable drawings are shared only by full contract identity. */
-export default function ChartCanvas({ instrument, timeframe, bars, configs, volumeAvailable, positions,
+export default function ChartCanvas({ instrument, timeframe, chartBackground = "default", bars, configs, volumeAvailable, positions,
   positionsAt, now, loading, loadingOlder, hasMore, loadOlder, error, tradingRows = [], onOrderChange, tradingDisabled = false, onRuntime, onCrosshair, showFullscreenControl = true, analysisData, analysisSettings, analysisSignals }) {
+  const themeRef = useRef(chartBackground);
+  themeRef.current = chartBackground;
   const host = useRef(null);
   const surface = useRef(null);
   const runtime = useRef(null);
@@ -89,25 +94,27 @@ export default function ChartCanvas({ instrument, timeframe, bars, configs, volu
     const disposers = [];
     setRenderError("");
     try {
+      const paint = chartPaint(themeRef.current);
       chart = createChart(host.current, {
+        ...paint,
         width: host.current.clientWidth || 800, height: host.current.clientHeight || 540,
-        layout: { background: { type: ColorType.Solid, color: "#0c111b" }, textColor: "#8d9bb1", fontFamily: "Inter, ui-sans-serif, system-ui", fontSize: 11, attributionLogo: true,
-          panes: { separatorColor: "#253046", separatorHoverColor: "#344560", enableResize: true } },
-        grid: { vertLines: { color: "#141e2d" }, horzLines: { color: "#192333" } },
-        rightPriceScale: { borderColor: "#263146", scaleMargins: { top: 0.12, bottom: 0.1 } },
-        timeScale: { borderColor: "#263146", timeVisible: !["1d", "1w"].includes(timeframe), secondsVisible: false, rightOffset: 5,
+        layout: { ...paint.layout, fontFamily: "Inter, ui-sans-serif, system-ui", fontSize: 11, attributionLogo: true,
+          panes: { ...paint.layout.panes, enableResize: true } },
+        rightPriceScale: { ...paint.rightPriceScale, scaleMargins: { top: 0.12, bottom: 0.1 } },
+        timeScale: { ...paint.timeScale, timeVisible: !["1d", "1w"].includes(timeframe), secondsVisible: false, rightOffset: 5,
           tickMarkFormatter: (time) => {
             if (typeof time !== "number") return chartTime(time);
             return new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", ...(["1d", "1w"].includes(timeframe)
               ? { day: "2-digit", month: "short" } : { hour: "2-digit", minute: "2-digit", hour12: false }) }).format(time * 1000);
           } },
         localization: { locale: "en-IN", timeFormatter: chartTime, priceFormatter: (price) => priceText(price) },
-        crosshair: { mode: CrosshairMode.Normal, vertLine: { color: "#64748b", labelBackgroundColor: "#334155" }, horzLine: { color: "#64748b", labelBackgroundColor: "#334155" } },
+        crosshair: { ...paint.crosshair, mode: CrosshairMode.Normal },
       });
-      const candles = chart.addSeries(CandlestickSeries, { upColor: "#35c69a", downColor: "#f16d7c", wickUpColor: "#35c69a", wickDownColor: "#f16d7c", borderVisible: false,
+      const candles = chart.addSeries(CandlestickSeries, { ...candlePaint(themeRef.current), borderVisible: false,
         priceFormat: { type: "price", precision: 2, minMove: Number(instrument.tick_size) || 0.01 } });
       manager = new DrawingManager(chart, candles, { bars: () => latest.current.bars, interval: timeframe,
         timeInfo: () => ({ timeZone: "Asia/Kolkata", intraday: !["1d", "1w"].includes(timeframe) }) });
+      installDrawingTheme(manager, () => themeRef.current);
       let stored;
       try { stored = readDrawingEnvelope(window.localStorage, instrument); }
       catch { stored = { drawings: [], writable: false, warning: "Browser storage unavailable. Drawings remain in this tab only." }; }
@@ -147,7 +154,7 @@ export default function ChartCanvas({ instrument, timeframe, bars, configs, volu
       };
       if (typeof ResizeObserver !== "undefined") { resize = new ResizeObserver(fitSize); resize.observe(host.current); }
       else { resizeFallback = fitSize; window.addEventListener("resize", fitSize); }
-      runtime.current = { chart, candles, manager, cursor, indicators: new Map(), priceLines: [], initialized: false, firstTime: null };
+      runtime.current = { chart, candles, manager, cursor, theme: themeRef.current, indicators: new Map(), priceLines: [], initialized: false, firstTime: null };
       setOrderRuntime({ chart, series: candles });
       syncCallbacks.current.onRuntime?.({ setCrosshair(time) {
         syncing.current = true;
@@ -178,6 +185,15 @@ export default function ChartCanvas({ instrument, timeframe, bars, configs, volu
 
   useEffect(() => {
     const r = runtime.current;
+    if (!r || r.theme === chartBackground) return;
+    r.chart.applyOptions(chartPaint(chartBackground));
+    r.candles.applyOptions(candlePaint(chartBackground));
+    r.manager.redraw();
+    r.theme = chartBackground;
+  }, [chartBackground]);
+
+  useEffect(() => {
+    const r = runtime.current;
     if (!r) return;
     try {
       const visible = r.initialized && r.firstTime !== bars[0]?.time ? r.chart.timeScale().getVisibleRange() : null;
@@ -202,10 +218,11 @@ export default function ChartCanvas({ instrument, timeframe, bars, configs, volu
       const panes = [...new Set(calculated.series.filter((item) => item.pane !== "price").map((item) => item.pane))];
       for (const item of calculated.series) {
         const pane = item.pane === "price" ? 0 : panes.indexOf(item.pane) + 1;
+        const ink = chartInk(item.color, chartBackground);
         let existing = r.indicators.get(item.id);
         if (!existing) {
           const series = r.chart.addSeries(item.type === "histogram" ? HistogramSeries : LineSeries, {
-            color: item.color, title: item.name, lineWidth: item.lineWidth || 1, priceLineVisible: false,
+            color: ink, title: item.name, lineWidth: item.lineWidth || 1, priceLineVisible: false,
             lastValueVisible: item.pane === "price", crosshairMarkerVisible: item.type !== "histogram",
             ...(item.indicatorId === "volume" ? { priceFormat: { type: "volume" } } : {}),
           }, pane);
@@ -216,13 +233,16 @@ export default function ChartCanvas({ instrument, timeframe, bars, configs, volu
           }
           r.indicators.set(item.id, existing);
         } else if (existing.series.getPane().paneIndex() !== pane) existing.series.moveToPane(pane);
-        existing.series.applyOptions({ color: item.color, title: item.name, ...(item.type === "line" ? { lineWidth: item.lineWidth || 1 } : {}) });
-        existing.series.setData(item.data);
-        existing.legend?.update(item);
+        existing.series.applyOptions({ color: ink, title: item.name, ...(item.type === "line" ? { lineWidth: item.lineWidth || 1 } : {}) });
+        const points = chartBackground === "white"
+          ? item.data.map(point => point.color ? { ...point, color: chartInk(point.color, chartBackground) } : point)
+          : item.data;
+        existing.series.setData(points);
+        existing.legend?.update(item, chartBackground);
       }
       r.chart.panes().forEach((pane, index) => pane.setStretchFactor(index === 0 ? 4 : 1));
     } catch { setRenderError("An indicator could not be rendered. Disable the indicator and refresh history."); }
-  }, [calculated]);
+  }, [calculated, chartBackground]);
 
   useEffect(() => {
     const r = runtime.current;
@@ -237,11 +257,11 @@ export default function ChartCanvas({ instrument, timeframe, bars, configs, volu
         : [{ price: position.stop_price, label: "SL", color: "#fb7185" }, { price: position.target_price, label: "Target", color: "#5ee0b5" }];
       for (const { price, label, color } of [{ price: position.entry_price, label: "Entry", color: "#a5b4fc" }, ...levels]) {
         if (!finiteValue(price)) continue;
-        r.priceLines.push(r.candles.createPriceLine({ price: Number(price), color, lineWidth: 1,
+        r.priceLines.push(r.candles.createPriceLine({ price: Number(price), color: chartInk(color, chartBackground), lineWidth: 1,
           lineStyle: fresh ? LineStyle.Dashed : LineStyle.Dotted, axisLabelVisible: true, title: `${prefix} ${label}` }));
       }
     }
-  }, [positions, positionsAt, now]);
+  }, [positions, positionsAt, now, chartBackground]);
 
   useEffect(() => {
     const changed = () => setFullscreen(document.fullscreenElement === surface.current);
@@ -265,7 +285,7 @@ export default function ChartCanvas({ instrument, timeframe, bars, configs, volu
       else setWarning("Fullscreen is unavailable in this browser.");
     } catch { setWarning("Fullscreen could not be opened in this browser."); }
   };
-  return <section className="chart-surface" ref={surface} aria-label={`${instrument.symbol} ${timeframe} candlestick chart`}>
+  return <section className={chartBackground === "white" ? "chart-surface chart-surface-white" : "chart-surface"} ref={surface} aria-label={`${instrument.symbol} ${timeframe} candlestick chart`}>
     <div className="chart-canvas-toolbar">
       <div className="chart-tools" role="toolbar" aria-label="Drawing tools">
         {TOOLS.map(({ id, label, Icon }) => <button type="button" key={id || "cursor"} title={label} aria-label={label} aria-pressed={tool === id}
@@ -293,7 +313,7 @@ export default function ChartCanvas({ instrument, timeframe, bars, configs, volu
     </div>
     <div className="chart-canvas-wrap">
       <div ref={host} className="chart-canvas" data-testid="chart-canvas" />
-      {orderRuntime && analysisData && <ChartAnalysisOverlays {...orderRuntime} data={analysisData} settings={analysisSettings} signals={analysisSignals} bars={bars} />}
+      {orderRuntime && analysisData && <ChartAnalysisOverlays theme={chartBackground} {...orderRuntime} data={analysisData} settings={analysisSettings} signals={analysisSignals} bars={bars} />}
       {orderRuntime && onOrderChange && <ChartOrderLines {...orderRuntime} rows={tradingRows} tickSize={Number(instrument.tick_size) || .05} onRequestChange={onOrderChange} disabled={tradingDisabled} />}
       {!!positions.length && <div className="chart-position-overlay" aria-label="On-chart unrealized profit and loss">{positions.map((position) => {
         const fresh = positionFresh(position, positionsAt, now);
@@ -306,7 +326,7 @@ export default function ChartCanvas({ instrument, timeframe, bars, configs, volu
       {(loading || renderError || (!bars.length && !loading)) && <div className="chart-empty" role="status"><div className="chart-empty-icon"><TrendingUp size={28} /></div><strong>{renderError || (loading ? "Loading candle history…" : error ? "History unavailable" : "No candles for this instrument")}</strong><span>{loading ? "Fetching history and connecting the market feed" : "Try another timeframe or refresh after connecting Upstox."}</span></div>}
       {loadingOlder && <div className="chart-loading-older">Loading earlier candles…</div>}
     </div>
-    {!!calculated.series.length && <div className="chart-indicator-legend">{calculated.series.map((item) => <span key={item.id}><i style={{ background: item.color }} />{item.name} <b>{priceText(item.data.filter((point) => finiteValue(point.value)).at(-1)?.value)}</b></span>)}</div>}
+    {!!calculated.series.length && <div className="chart-indicator-legend">{calculated.series.map((item) => <span key={item.id}><i style={{ background: chartInk(item.color, chartBackground) }} />{item.name} <b>{priceText(item.data.filter((point) => finiteValue(point.value)).at(-1)?.value)}</b></span>)}</div>}
     {(warning || calculated.warnings.length > 0) && <div className="chart-inline-warning" role="status">{[warning, ...calculated.warnings].filter(Boolean).join(" · ")}</div>}
     <footer className="chart-canvas-footer"><span>All times IST · Drag to pan · Scroll to zoom</span><a href="https://www.tradingview.com/lightweight-charts/" target="_blank" rel="noreferrer">Charts by TradingView Lightweight Charts™</a></footer>
   </section>;

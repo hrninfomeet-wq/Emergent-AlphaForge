@@ -9,7 +9,7 @@ import { defaultAnalysisSettings, normalizeAnalysisSettings } from '../../lib/ch
 import { matchingPositions, priceText, readable, sessionQuote, streamFreshness, TIMEFRAMES, timeText } from './chartPresentation';
 import { instrumentIdentity } from '../../lib/chartModel';
 
-export default function ChartTile({ tile, index, active, onActivate, onChange, onData, onRuntime, onCrosshair, now, origin, showPositions, trading, tradingRows }) {
+export default function ChartTile({ tile, chartBackground, index, active, onActivate, onChange, onData, onRuntime, onCrosshair, now, origin, showPositions, trading, tradingRows }) {
   const data = useChartData(tile.instrument, tile.timeframe, { positionsEnabled: active });
   const [settings, setSettings] = useState(false);
   const [tools, setTools] = useState(false);
@@ -39,7 +39,7 @@ export default function ChartTile({ tile, index, active, onActivate, onChange, o
     {analysisOpen && <ChartAnalysisPanel settings={analysisSettings} onChange={value => onChange({ analysis: value })} analysis={analysis} now={now} />}
     {!analysisOpen && analysis.error && <div className="chart-inline-warning" role="status">{analysis.error}</div>}
     {(data.error || warnings.length > 0) && <div className="chart-inline-warning" role="status">{[data.error, ...warnings].filter(Boolean).join(' · ')}</div>}
-    <ChartCanvas showFullscreenControl={false} key={identity} instrument={selected} timeframe={tile.timeframe} bars={data.bars} configs={tile.configs} volumeAvailable={data.volumeAvailable} positions={active && showPositions ? positions : []}
+    <ChartCanvas chartBackground={chartBackground} showFullscreenControl={false} key={identity} instrument={selected} timeframe={tile.timeframe} bars={data.bars} configs={tile.configs} volumeAvailable={data.volumeAvailable} positions={active && showPositions ? positions : []}
       tradingRows={active ? tradingRows.filter(row => row.instrument_key === selected.instrument_key && row.mode === trading.mode) : []} onOrderChange={active ? trading.requestChange : undefined} tradingDisabled={trading.stale || trading.busy}
       analysisData={analysis.data} analysisSettings={effectiveAnalysis} analysisSignals={analysis.signals}
       positionsAt={data.positionsAt} now={now} loading={data.loading} loadingOlder={data.loadingOlder} hasMore={data.hasMore} loadOlder={data.loadOlder} error={data.error} onRuntime={onRuntime} onCrosshair={onCrosshair} />
