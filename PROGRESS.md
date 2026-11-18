@@ -39,6 +39,12 @@ Evidence is in frontend/build/chart-qa/{before,after}-matrix.json and PNGs,
 using captured November 12 API histories for NIFTY/SENSEX/RELIANCE at 1m/5m.
 The range-change browser test injects a changed response into an isolated page.
 It is not a live market-session check. 21 Jest checks passed across five suites.
+The exact preserved-source production build passed (host yarn build), and its
+optimized bundle passed the 12-view Chrome matrix plus the changed-range check.
+The final two Jest runs passed 31 tests across seven suites. Source fingerprint
+acbe8be7ea077871288c7017adbbb11a9990aebda62d9c52020f6729a1c0a2e8.
+Prepared context C:/Users/haroo/AppData/Local/Temp/alphaforge-chart-frontend-j4jw5gnd/context,
+implementation revision 113ab161cb9ec9ba83edbc48b28d5299e706c3b4.
 Deployment is pending Docker startup and the user's fresh flat-account response.
 Prepared release helper frontend/build/chart-qa/release_frontend.py reuses the
 exact prior shipped source plus only committed chart changes. Frontend-only
