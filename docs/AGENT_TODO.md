@@ -776,3 +776,11 @@ promotion-grade result.
   See [rollout checks](chart-terminal/rollout-acceptance.md) and [progress](../PROGRESS.md).
 - [ ] Operator: compare moving prices on the deployed screen during the next
   session. Actual real-order acceptance remains exclusively the user's check.
+
+
+### Chart display and watchlist request - 2026-11-18
+
+- [x] B1 RSI hover/latest values, B2 consecutive watchlist additions, B3 maximized drawer, B4 White/Default, B5 prominent current premium/discount bands. Integrated locally through 113ab16.
+- [x] 31 selected Jest tests passed in the final two runs. Browser evidence covers six real-history cases in two themes and a changed-range response.
+- [ ] Docker startup approval, frontend image deployment and normal Chrome verification. Docker was stopped on this resume; fresh flat-account confirmation requested.
+- Resume from root PROGRESS.md. Order logic and backtest/optimizer were excluded. Broker live testing remains operator-only.
