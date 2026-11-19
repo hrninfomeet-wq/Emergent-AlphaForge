@@ -1,26 +1,40 @@
 # AlphaForge chart terminal upgrade
 
-## In progress: individual chart full screen, November 19
+## Completed: individual chart full screen, November 19
 
-Requested: add a button in each chart's timeframe toolbar. Expand that chart from
-normal or maximized layouts, then restore without losing layout, symbols,
-timeframes, indicators or drawings. No order-path/backend changes or real orders.
-
-1. Inspect and implement scoped tile full screen — done when the selected tile
-   fills the viewport and its existing chart instance stays mounted (implemented).
-2. Verify normal/maximized, native/fallback, Restore/Escape — done when the
-   original grid and settings return and no duplicate canvas/stream is created.
-3. Build and deploy frontend only — done when served source and Chrome controls
-   match, with backend/watchdog/Mongo IDs and start times unchanged.
-
-Critical part (cost: redone work): preserving chart instances and outer fullscreen
-state. Independent source review delegated; root owns implementation and rollout.
-Implementation checkpoint: viewport overlay preserves sibling confirmation dialogs; native
-fullscreen on a tile was rejected because it hides those dialogs. The independent
-review is complete. 11 terminal Jest tests passed, including node/settings preservation,
-native/fallback outer restore, modal Escape priority and browser fullscreen exit.
-Next: production build, isolated Chrome geometry/dialog checks, then frontend-only rollout.
-Resume here, not from the completed B1-B5 work below. Preserve unrelated dirty files.
+- Added an expand/restore icon immediately before Indicators in every chart's
+  timeframe toolbar. It fills the current viewport in normal and maximized mode.
+  Restore or Escape returns to the layout; native browser Escape can also leave
+  the browser's outer fullscreen mode. Expansion is temporary, not a saved layout.
+- Existing chart instances, symbols, timeframes, indicators and drawings stay
+  mounted. The shared confirmation dialog stays above the expanded tile. No
+  order-path/backend changes or real orders; all mutation requests were blocked
+  in isolated browser checks, with none attempted.
+- Confirmed: 11 terminal Jest tests passed. Production Docker build passed.
+  Isolated Chrome covered each tile in normal/maximized mode, Restore/Escape,
+  original canvas-node identity and settings, viewport geometry, both themes,
+  and an actual shared confirmation rendered from a mocked paper row (Back only).
+- Confirmed in the existing Chrome tab after rollout: Chart 1 expanded from normal
+  view, Chart 2 from maximized view, both filled the 1500 x 713 px viewport;
+  Restore/Escape preserved the two-column layout and active second chart, NIFTY
+  5m / NIFTY 1h. Original normal layout and Default background were left in place.
+  Chrome used the existing window-maximize fallback; native fullscreen events
+  have unit coverage only. The feed was disconnected during this display check.
+- Deployed implementation 2457b41c48a4a2d9d3f3b83e9e3061fed2d98463, served
+  main.b934171b.js, source e120da4466943ce5ef89c7ed9bedbbe339467f04ba45455692e1b55f0d42a391.
+  Only frontend was recreated. Backend/watchdog/Mongo IDs, images and start times
+  are identical before/after; verified in tile-fullscreen-rollout.json.
+- Release context: C:/Users/haroo/AppData/Local/Temp/alphaforge-chart-frontend-a7j7acpi/context.
+  The source was rebuilt from the verified November 18 shipped snapshot plus
+  scoped committed changes. Rollback image: alphaforge-chart-rollback-frontend:2457b41.
+  Retag it as emergent-alphaforge-frontend:latest and recreate frontend only.
+- Evidence (ignored): frontend/build/chart-qa/tile-fullscreen-results.json,
+  tile-fullscreen-*-dialog.png and deployed-tile-fullscreen-nov19.jpg.
+- Independent review identified the critical dialog visibility risk; a native
+  fullscreen tile would hide the sibling confirmation. The viewport overlay
+  avoids that design. Browser evidence verifies the modal remains on top.
+- Next: no implementation or deployment gate remains for this request. Preserve
+  unrelated dirty files. Local main integration only; no remote push.
 
 ## Completed: chart display and watchlist, November 18
 

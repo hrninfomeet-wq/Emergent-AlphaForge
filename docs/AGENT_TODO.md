@@ -784,3 +784,9 @@ promotion-grade result.
 - [x] 31 selected Jest tests passed in the final two runs. Browser evidence covers six real-history cases in two themes and a changed-range response.
 - [x] 2026-11-18 frontend-only rollout and existing Chrome verification completed. User reported Docker already running. Backend/watchdog/Mongo IDs and start times unchanged. Served main.aa7ea55c.js has source acbe8be7ea07; the visible FE/BE source mismatch is expected because backend was not restarted. Drawer persistence, White/Default, RSI/zone rendering and search ticks/+ checked; final page remains PAPER. No orders placed. See root PROGRESS.md for rollback and evidence.
 - Resume from root PROGRESS.md. Order logic and backtest/optimizer were excluded. Broker live testing remains operator-only.
+
+### Individual chart full screen - 2026-11-19
+
+- [x] Toolbar expand/restore button in every chart. Works from normal and maximized layouts without remounting charts; keeps shared confirmations above the viewport overlay.
+- [x] 11 terminal tests, production build, isolated Chrome canvas/settings/modal checks, and existing Chrome two-chart acceptance passed. Native browser fullscreen events only unit-tested; Chrome used window-maximize fallback.
+- [x] Frontend-only release 2457b41 deployed, source e120da446694. Backend/watchdog/Mongo identities and start times unchanged. Original NIFTY 5m/1h layout restored. No orders or backend/order-code edits. See root PROGRESS.md for evidence and rollback.

@@ -1903,3 +1903,9 @@ See docs/chart-terminal/rollout-acceptance.md for the two-tab and restart checks
 - Core lesson: a display-only release can preserve the running exit guard by rebuilding the exact shipped source plus the scoped frontend changes and recreating only frontend with --no-deps.
 - Confirmed approach: verify the served bundle fingerprint and compare backend, watchdog and database container IDs AND start times before/after. Keep an explicit rollback image. The badge truthfully reports the resulting FE/BE source mismatch.
 - Dead ends to avoid: rebuilding the unrelated dirty checkout, restarting the backend just to clear the build badge, or treating saved fullscreen drawer visibility as a promise that browsers restore native full screen after reload. Re-enter full screen to check that preference.
+
+## Individual chart expansion lesson - 2026-11-19
+
+- Core lesson: a fullscreen target must include all dependent dialogs. Putting only ChartTile in the browser top layer hides its sibling trading confirmation. Keep a viewport-sized tile inside the terminal, below the shared modal.
+- Confirmed approach: preserve mounted canvas nodes; check both tile geometry and canvas backing size after ResizeObserver/paint settle; verify Restore and Escape against the original layout/settings, and show a mocked confirmation without submitting it.
+- Dead ends: accepting host-element size alone (an immediate screenshot can still show the previous canvas size), assuming automated Chrome granted native fullscreen, and using a stale preserved release context. Verify the latest shipped fingerprint before assembling the frontend-only image.
