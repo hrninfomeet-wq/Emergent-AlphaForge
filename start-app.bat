@@ -44,6 +44,16 @@ echo Run start-app.bat --help for usage.
 exit /b 2
 
 :args_done
+rem Git identity is supplemental; baked source hashes include uncommitted code.
+rem Capture without echoing status paths or reading any credential files.
+set "ALPHAFORGE_BUILD_REVISION="
+set "ALPHAFORGE_BUILD_DIRTY="
+where git >nul 2>nul
+if not errorlevel 1 (
+  for /f "delims=" %%G in ('git rev-parse HEAD 2^>nul') do set "ALPHAFORGE_BUILD_REVISION=%%G"
+  set "ALPHAFORGE_BUILD_DIRTY=false"
+  for /f "delims=" %%G in ('git status --porcelain --untracked-files^=normal 2^>nul') do set "ALPHAFORGE_BUILD_DIRTY=true"
+)
 echo.
 echo ============================================================
 echo  AlphaForge Trading Lab - local startup assistant

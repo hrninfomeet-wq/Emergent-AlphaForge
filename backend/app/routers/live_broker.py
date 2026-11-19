@@ -54,7 +54,7 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, StrictBool
 from typing import Literal as _Literal
 
-from app.live import flattrade_token
+from app.live import flattrade_token, receipt_capture
 from app.live.flattrade_token import (
     DEFAULT_USER_ID,
     build_login_url,
@@ -709,6 +709,7 @@ async def live_broker_orders():
         raise HTTPException(400, f"Could not build Flattrade client: {exc}") from exc
     try:
         orders = await client.order_book()
+        receipt_capture.observe_book(orders)
         return {"orders": orders, "count": len(orders)}
     except BrokerReadError as exc:
         raise _broker_read_400(exc, "order_book") from exc
@@ -728,6 +729,7 @@ async def live_broker_trades():
         raise HTTPException(400, f"Could not build Flattrade client: {exc}") from exc
     try:
         trades = await client.trade_book()
+        receipt_capture.observe_book(trades, trades=True)
         return {"trades": trades, "count": len(trades)}
     except BrokerReadError as exc:
         raise _broker_read_400(exc, "trade_book") from exc
@@ -968,6 +970,22 @@ async def live_trade_stats():
         "trade_count": len(rows),
         "closed_count": len(closed),
     })
+
+
+@api.get("/live-broker/execution-receipts")
+async def live_execution_receipts(limit: int = Query(50, ge=1, le=100),
+                                  skip: int = Query(0, ge=0)):
+    """Existing intent/fill/journal evidence only. No broker call or mutation."""
+    from app.db import get_db
+    from app.live.execution_receipts import receipt_page
+
+    try:
+        guards = _get_live_registry().snapshot()
+    except Exception:
+        guards = None  # unavailable is not an empty/healthy registry
+    result = await receipt_page(get_db(), limit=limit, skip=skip, guards=guards)
+    result["read_at"] = datetime.now(timezone.utc).isoformat()
+    return result
 
 
 @api.get("/live-broker/trade-history")
@@ -1297,12 +1315,16 @@ async def live_order_rules(underlying: str):
 async def live_order_preview(body: _OrderTicketBody):
     """Run the choke-point as a DRY-RUN — exchange/tick/freeze/order-type checks
     with NO placement. Returns the would-send child jdata + full verdicts."""
+    from app.live.manual_ticket import manual_ticket_verdict
     res = await _validate_order_ticket(body)
+    placement = manual_ticket_verdict(body.dict())
     return {
         "ok": res["children"] is not None,
         "children": res["would_send"],
         "verdicts": res["verdicts"],
         "client_order_id": res["cid"],
+        "placement_supported": placement["ok"],
+        "placement_reason": placement["detail"],
     }
 
 
@@ -1312,6 +1334,10 @@ async def live_order_create_approval(body: _OrderTicketBody):
 
     Returns the one-shot token (surfaced once) so the operator can redeem it via
     the approve route. A ticket that fails validation is NOT queued."""
+    from app.live.manual_ticket import manual_ticket_verdict
+    placement = manual_ticket_verdict(body.dict())
+    if not placement["ok"]:
+        return {"ok": False, "verdicts": [placement]}
     res = await _validate_order_ticket(body)
     if res["children"] is None:
         return {"ok": False, "verdicts": res["verdicts"]}
@@ -1389,14 +1415,20 @@ async def live_order_approve(approval_id: str, body: _ApproveBody):
             out.update(extra)
         return out
 
-    ticket = (res.get("payload") or {}).get("ticket") or {}
-    # The supervised executor places a 1-lot LONG entry; SELL/multi-lot/MARKET are
-    # preview-only for now (the approval still validated the full exchange rules).
-    if str(ticket.get("side")) != "B":
-        return _not_placed(
-            "automated placement supports BUY entries only — Reject this order and "
-            "place a SELL/exit manually via the square route"
-        )
+    approved_payload = res.get("payload") or {}
+    ticket = approved_payload.get("ticket") or {}
+    # Recheck legacy pending tickets too: approval must not silently turn a
+    # different size/product/type/buffer into the supervised executor's defaults.
+    from app.live.manual_ticket import manual_ticket_verdict, same_approved_entry
+    placement = manual_ticket_verdict(ticket)
+    if not placement["ok"]:
+        return {**_not_placed(placement["detail"]), "retryable": False}
+    approved_children = approved_payload.get("would_send")
+    if (not isinstance(approved_children, list) or len(approved_children) != 1
+            or not same_approved_entry(approved_children[0], approved_children[0])):
+        return {**_not_placed("Approved order snapshot missing; preview and approve again."), "retryable": False}
+
+    receipt_capture.approval_decided(approval_id, approved_children[0])
 
     contract = {
         "underlying": ticket.get("underlying"),
@@ -1408,13 +1440,16 @@ async def live_order_approve(approval_id: str, body: _ApproveBody):
         contract=contract,
         side="B",
         ref_ltp=float(ticket.get("ref_ltp") or 0.0),
-        band_pct=float(ticket.get("band_pct") or 5.0),
+        band_pct=float(ticket.get("band_pct") if ticket.get("band_pct") is not None else 5.0),
         levels=ticket.get("levels") or {},
     )
     try:
-        result = await live_order_place(place_body)
+        result = await _place_manual_order(place_body, approved_entry=approved_children[0])
     except HTTPException as exc:
         return _not_placed(f"placement blocked: {exc.detail}")
+
+    if isinstance(result, dict) and (result.get("cid") or result.get("norenordno")):
+        receipt_capture.approval_decided(approval_id, approved_children[0], result)
 
     if isinstance(result, dict) and result.get("placed"):
         store.mark_consumed(approval_id, now)
@@ -2101,6 +2136,10 @@ class _PlaceBody(BaseModel):
 
 @api.post("/live-broker/order/place")
 async def live_order_place(body: _PlaceBody):
+    return await _place_manual_order(body)
+
+
+async def _place_manual_order(body: _PlaceBody, *, approved_entry: Optional[Dict[str, Any]] = None):
     """Place one real option order through ALL safety gates.
 
     This is the ONLY route that can cause an ENTRY order to be placed.
@@ -2191,6 +2230,7 @@ async def live_order_place(body: _PlaceBody):
         # LIVE_TEST entry transmits real, but its automated exits transmit only when
         # LIVE_GUARD_ARMED=1 (the removed 10-min timer used to square ungated).
         guard_armed=_live_guard_armed(),
+        approved_entry=approved_entry,
     )
     return result
 

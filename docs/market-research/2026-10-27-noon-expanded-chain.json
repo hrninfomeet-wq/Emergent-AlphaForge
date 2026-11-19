@@ -1,0 +1,178 @@
+[
+  {
+    "strike": 22500.0,
+    "side": "CE",
+    "oi": null,
+    "ltp": null,
+    "timestamp": null,
+    "received": null
+  },
+  {
+    "strike": 22500.0,
+    "side": "PE",
+    "oi": null,
+    "ltp": null,
+    "timestamp": null,
+    "received": null
+  },
+  {
+    "strike": 22550.0,
+    "side": "CE",
+    "oi": 1201005.0,
+    "ltp": 192.4,
+    "timestamp": 1793080439043,
+    "received": 1793080440451
+  },
+  {
+    "strike": 22550.0,
+    "side": "PE",
+    "oi": 11742900.0,
+    "ltp": 10.65,
+    "timestamp": 1793080440553,
+    "received": 1793080440601
+  },
+  {
+    "strike": 22600.0,
+    "side": "CE",
+    "oi": 4369430.0,
+    "ltp": 170.7,
+    "timestamp": 1793083030341,
+    "received": 1793083030800
+  },
+  {
+    "strike": 22600.0,
+    "side": "PE",
+    "oi": 23065770.0,
+    "ltp": 8.6,
+    "timestamp": 1793083030571,
+    "received": 1793083030800
+  },
+  {
+    "strike": 22650.0,
+    "side": "CE",
+    "oi": 3257540.0,
+    "ltp": 125.95,
+    "timestamp": 1793083030536,
+    "received": 1793083030658
+  },
+  {
+    "strike": 22650.0,
+    "side": "PE",
+    "oi": 16878940.0,
+    "ltp": 14.3,
+    "timestamp": 1793083030548,
+    "received": 1793083030658
+  },
+  {
+    "strike": 22700.0,
+    "side": "CE",
+    "oi": 12930515.0,
+    "ltp": 87.0,
+    "timestamp": 1793083030843,
+    "received": 1793083030949
+  },
+  {
+    "strike": 22700.0,
+    "side": "PE",
+    "oi": 32803225.0,
+    "ltp": 25.0,
+    "timestamp": 1793083029946,
+    "received": 1793083030052
+  },
+  {
+    "strike": 22750.0,
+    "side": "CE",
+    "oi": 16832855.0,
+    "ltp": 54.75,
+    "timestamp": 1793083030236,
+    "received": 1793083030351
+  },
+  {
+    "strike": 22750.0,
+    "side": "PE",
+    "oi": 21733855.0,
+    "ltp": 42.35,
+    "timestamp": 1793083030223,
+    "received": 1793083030351
+  },
+  {
+    "strike": 22800.0,
+    "side": "CE",
+    "oi": 28199795.0,
+    "ltp": 32.5,
+    "timestamp": 1793083030343,
+    "received": 1793083030501
+  },
+  {
+    "strike": 22800.0,
+    "side": "PE",
+    "oi": 14261910.0,
+    "ltp": 70.3,
+    "timestamp": 1793083030333,
+    "received": 1793083030501
+  },
+  {
+    "strike": 22850.0,
+    "side": "CE",
+    "oi": 14818700.0,
+    "ltp": 18.3,
+    "timestamp": 1793083030272,
+    "received": 1793083030351
+  },
+  {
+    "strike": 22850.0,
+    "side": "PE",
+    "oi": 3217175.0,
+    "ltp": 106.35,
+    "timestamp": 1793083030884,
+    "received": 1793083030949
+  },
+  {
+    "strike": 22900.0,
+    "side": "CE",
+    "oi": 19785740.0,
+    "ltp": 10.2,
+    "timestamp": 1793083030646,
+    "received": 1793083030800
+  },
+  {
+    "strike": 22900.0,
+    "side": "PE",
+    "oi": 3683225.0,
+    "ltp": 149.05,
+    "timestamp": 1793083030627,
+    "received": 1793083030800
+  },
+  {
+    "strike": 22950.0,
+    "side": "CE",
+    "oi": 9105720.0,
+    "ltp": 6.95,
+    "timestamp": 1793082720184,
+    "received": 1793082720295
+  },
+  {
+    "strike": 22950.0,
+    "side": "PE",
+    "oi": 812370.0,
+    "ltp": 182.0,
+    "timestamp": 1793082720057,
+    "received": 1793082720295
+  },
+  {
+    "strike": 23000.0,
+    "side": "CE",
+    "oi": null,
+    "ltp": null,
+    "timestamp": null,
+    "received": null
+  },
+  {
+    "strike": 23000.0,
+    "side": "PE",
+    "oi": null,
+    "ltp": null,
+    "timestamp": null,
+    "received": null
+  }
+]

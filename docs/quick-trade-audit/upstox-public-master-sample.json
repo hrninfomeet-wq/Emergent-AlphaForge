@@ -1,0 +1,112 @@
+{
+  "NIFTY": {
+    "url": "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz",
+    "last_modified": "Sun, 25 Oct 2026 00:01:29 GMT",
+    "contract_count": 1828,
+    "lot_sizes": [
+      65
+    ],
+    "tick_sizes_raw": [
+      5.0
+    ],
+    "freeze_quantities": [
+      3510.0
+    ],
+    "first_sample": {
+      "weekly": false,
+      "segment": "NSE_FO",
+      "name": "NIFTY",
+      "exchange": "NSE",
+      "expiry": 1793125799000,
+      "instrument_type": "CE",
+      "asset_symbol": "NIFTY",
+      "underlying_symbol": "NIFTY",
+      "instrument_key": "NSE_FO|51212",
+      "lot_size": 65,
+      "freeze_quantity": 3510.0,
+      "exchange_token": "51212",
+      "minimum_lot": 65,
+      "asset_key": "NSE_INDEX|Nifty 50",
+      "underlying_key": "NSE_INDEX|Nifty 50",
+      "tick_size": 5.0,
+      "asset_type": "INDEX",
+      "underlying_type": "INDEX",
+      "trading_symbol": "NIFTY 20050 CE 27 OCT 26",
+      "strike_price": 20050.0,
+      "qty_multiplier": 1.0
+    }
+  },
+  "BANKNIFTY": {
+    "url": "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz",
+    "last_modified": "Sun, 25 Oct 2026 00:01:29 GMT",
+    "contract_count": 1003,
+    "lot_sizes": [
+      30
+    ],
+    "tick_sizes_raw": [
+      5.0
+    ],
+    "freeze_quantities": [
+      1440.0
+    ],
+    "first_sample": {
+      "weekly": false,
+      "segment": "NSE_FO",
+      "name": "BANKNIFTY",
+      "exchange": "NSE",
+      "expiry": 1793125799000,
+      "instrument_type": "CE",
+      "asset_symbol": "BANKNIFTY",
+      "underlying_symbol": "BANKNIFTY",
+      "instrument_key": "NSE_FO|49242",
+      "lot_size": 30,
+      "freeze_quantity": 1440.0,
+      "exchange_token": "49242",
+      "minimum_lot": 30,
+      "asset_key": "NSE_INDEX|Nifty Bank",
+      "underlying_key": "NSE_INDEX|Nifty Bank",
+      "tick_size": 5.0,
+      "asset_type": "INDEX",
+      "underlying_type": "INDEX",
+      "trading_symbol": "BANKNIFTY 47000 CE 27 OCT 26",
+      "strike_price": 47000.0,
+      "qty_multiplier": 1.0
+    }
+  },
+  "SENSEX": {
+    "url": "https://assets.upstox.com/market-quote/instruments/exchange/BSE.json.gz",
+    "last_modified": "Sun, 25 Oct 2026 00:01:29 GMT",
+    "contract_count": 2978,
+    "lot_sizes": [
+      20
+    ],
+    "tick_sizes_raw": [
+      5.0
+    ],
+    "freeze_quantities": [
+      1000.0
+    ],
+    "first_sample": {
+      "weekly": false,
+      "segment": "BSE_FO",
+      "name": "SENSEX",
+      "exchange": "BSE",
+      "expiry": 1793298599000,
+      "instrument_type": "CE",
+      "asset_symbol": "SENSEX",
+      "underlying_symbol": "SENSEX",
+      "instrument_key": "BSE_FO|1163172",
+      "lot_size": 20,
+      "freeze_quantity": 1000.0,
+      "exchange_token": "1163172",
+      "minimum_lot": 20,
+      "asset_key": "BSE_INDEX|SENSEX",
+      "underlying_key": "BSE_INDEX|SENSEX",
+      "tick_size": 5.0,
+      "asset_type": "INDEX",
+      "underlying_type": "INDEX",
+      "trading_symbol": "SENSEX 64600 CE 29 OCT 26",
+      "strike_price": 64600.0
+    }
+  }
+}

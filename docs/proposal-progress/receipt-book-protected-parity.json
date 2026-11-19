@@ -1,0 +1,7 @@
+{
+  "app/live/kill_switch.py": true,
+  "app/live/live_position_guard.py": true,
+  "app/runtime.py": true,
+  "app/routers/deployments.py": true,
+  "app/routers/live_broker.py": true
+}

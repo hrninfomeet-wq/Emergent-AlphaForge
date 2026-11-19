@@ -24,6 +24,7 @@ import { ResetLayoutButton } from "@/components/common/ResetLayoutButton";
 import { buildPerformanceSeries, displayTrades, isPremiumNative, joinOptionLegs, resultKpis } from "@/lib/backtestMetrics";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
 import BacktestRunJournal from "@/components/BacktestRunJournal";
+import ResearchComparison from "@/components/backtest/ResearchComparison";
 import { Play, Save, Filter, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, Download, FileJson, FileText, FolderOpen, ShieldCheck, Loader2, AlertTriangle, HelpCircle, Rocket } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { dateToMs, msToDate } from "@/lib/time";
@@ -1633,6 +1634,7 @@ export default function BacktestLab() {
       </section>
     </div>
 
+      <ResearchComparison pastRuns={pastRuns} presets={presets} />
       <BacktestRunJournal onLoadRun={loadPastRun} refreshKey={pastRuns.length} />
     </div>
   );

@@ -1,0 +1,37 @@
+{
+  "checked_at": "2026-10-25T06:11:58.971562+00:00",
+  "operator_flat_confirmation": true,
+  "health": {
+    "db": "ok"
+  },
+  "mode": {
+    "mode": "LIVE_OFFLINE",
+    "single_shot_consumed": false,
+    "test_session_id": null,
+    "_id": "singleton",
+    "since": "2026-09-02T15:48:39.734766+00:00"
+  },
+  "guard": {
+    "armed": true,
+    "mode": "ARMED \u2014 transmits real squares",
+    "count": 0,
+    "rehydrated_count": 0,
+    "guarded": [],
+    "health": {
+      "state": "off_hours",
+      "label": "OFF HOURS",
+      "reason": "outside the options session \u2014 the guard cycles only while the market is open"
+    }
+  },
+  "database": {
+    "liveDeployments": 0,
+    "openLive": 0,
+    "unsubmitted": 0,
+    "activePaper": 9,
+    "receiptCollectionExists": false,
+    "receiptCount": 0
+  },
+  "alphaforge_backend": "37947a2661fe82631c59951897a74b8d619e14159234162363b8b65160793bd7 2026-10-25T06:09:33.14303567Z sha256:794e20898ca43de3f4209cde48fb713017be4bf06ce70607cf727f5078478a6b",
+  "alphaforge_frontend": "846bb89dd53642ba49572f4c9020e1dd29269687ccbb6bcb30be48b2a10e9277 2026-10-25T06:09:33.138192152Z sha256:115926a964281fd1e802c83e0b99bf0826273a74339050deef2bf477628ff5f1",
+  "alphaforge_mongo": "eb10b0b16368fc752e98efef3c931211c332d233c3222840168c3168fe1c5fab 2026-10-25T06:09:33.139167984Z sha256:4b5bf3c2bb7516164f6dcb44acce4fdcb428abfe5771a1128304a0f34ab9ff7c"
+}

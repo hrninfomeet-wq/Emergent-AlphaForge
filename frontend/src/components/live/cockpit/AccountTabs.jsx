@@ -3,6 +3,7 @@ import { fmtINR } from "@/lib/fmt";
 import { OrdersBlotter, deriveCash } from "@/components/live/liveHelpers";
 import LiveBlotter from "@/components/live/LiveBlotter";
 import LiveTradeStats from "@/components/live/LiveTradeStats";
+import ExecutionReceipts from "@/components/live/ExecutionReceipts";
 
 /**
  * Professional broker-style account panel with tabs — Funds & Margin, Holdings,
@@ -109,7 +110,7 @@ const TABS = [
   { k: "trd", label: "Trade book" },
 ];
 
-export default function AccountTabs({ limits, orders, blotter, gtt, holdings, errors = {} }) {
+export default function AccountTabs({ limits, orders, blotter, gtt, holdings, errors = {}, ordersReadAt }) {
   const [tab, setTab] = useState("fund");
 
   const availMargin = deriveCash(limits);
@@ -190,6 +191,7 @@ export default function AccountTabs({ limits, orders, blotter, gtt, holdings, er
           <div className="space-y-4">
             <LiveBlotter rows={blotter?.rows} gtt={gtt?.gtt} />
             <LiveTradeStats />
+            <ExecutionReceipts brokerOrders={orders} brokerOrdersError={errors.orders} brokerOrdersReadAt={ordersReadAt} />
           </div>
         )}
       </div>

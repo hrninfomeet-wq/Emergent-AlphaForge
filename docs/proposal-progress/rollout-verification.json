@@ -1,0 +1,84 @@
+{
+  "checked_at_utc": "2026-10-24T11:31:21.081145+00:00",
+  "health": {
+    "db": "ok"
+  },
+  "source_sha256": "542496391be03d4a31d30a3b6755b2adc689b27c8675f92fe6618e8661562541",
+  "backend_manifest": {
+    "schema": 1,
+    "scope": "alphaforge-source-v1",
+    "status": "known",
+    "source_sha256": "542496391be03d4a31d30a3b6755b2adc689b27c8675f92fe6618e8661562541",
+    "built_at": "2026-10-24T11:28:39.217707+00:00",
+    "git_revision": "ff9cbe3accb8b1e393a6bbfb6836e1bea3ea5d69",
+    "git_dirty": true,
+    "checkout_status": "unverified"
+  },
+  "frontend_hashes": [
+    "542496391be03d4a31d30a3b6755b2adc689b27c8675f92fe6618e8661562541"
+  ],
+  "bundle": "/static/js/main.923d57cd.js",
+  "frontend_sources_match": {
+    "components/BuildIdentity.jsx": true,
+    "lib/buildIdentity.js": true,
+    "components/backtest/ResearchComparison.jsx": true,
+    "lib/researchComparison.js": true,
+    "components/live/ExecutionReceipts.jsx": true,
+    "components/live/manualTicketCapabilities.js": true,
+    "components/live/LiveOrderTicket.jsx": true,
+    "components/live/cockpit/AccountTabs.jsx": true,
+    "pages/BacktestLab.jsx": true,
+    "lib/api.js": true
+  },
+  "backend_sources_match": {
+    "app/build_identity.py": true,
+    "app/live/execution_receipts.py": true,
+    "app/routers/live_broker.py": true,
+    "server.py": true
+  },
+  "receipt_page": {
+    "count": 21,
+    "total": 21,
+    "fill_evidence_counts": {
+      "unavailable": 21,
+      "stored_order_event": 0,
+      "needs_review": 0
+    }
+  },
+  "mode": "LIVE_OFFLINE",
+  "guard_count": 0,
+  "db_counts": {
+    "live_deployments": 0,
+    "open_live_rows": 0,
+    "unsubmitted_intents": 0,
+    "total_intents": 21,
+    "active_paper": 9
+  },
+  "images": {
+    "backend": "sha256:f95260a9603c7ca5b25f3f03b6e97c705d8bcb20e05cb18ae5eadea095acf090",
+    "frontend": "sha256:2a64873f1e1afa3c832fe655cbdc23fcfd60c0b278d30de1b44ee600c3712497"
+  },
+  "deployment_status_counts": [
+    {
+      "_id": {
+        "mode": "shadow",
+        "status": "ARCHIVED"
+      },
+      "count": 2
+    },
+    {
+      "_id": {
+        "mode": "paper",
+        "status": "ARCHIVED"
+      },
+      "count": 39
+    },
+    {
+      "_id": {
+        "mode": "paper",
+        "status": "ACTIVE"
+      },
+      "count": 9
+    }
+  ]
+}

@@ -2,18 +2,19 @@
 
 Covers: GET /order-rules/{underlying}, POST /order/preview (choke-point dry-run),
 and the approval queue (create / list / approve / reject) with the one-shot token
-gate sitting in FRONT of the single executor chokepoint (live_order_place).
+gate sitting in FRONT of the manual placement helper (_place_manual_order).
 
 RULES (mirrors test_live_l3_routes): never instantiate a real FlattradeClient;
 all broker access goes through MockNoren patched on the module getters. The
-real-order executor (live_order_place) is patched so NO order is ever placed.
+manual placement helper is patched so NO order is ever placed. Unexpected DB
+access fails immediately, including deferred receipt persistence.
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 from typing import Optional
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -25,6 +26,16 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.live.approval_store import ApprovalStore
 from app.live.mock_noren import MockNoren
 import app.routers.live_broker as _routes
+
+
+@pytest.fixture(autouse=True)
+def _offline_only(monkeypatch):
+    """A stale patch target must fail locally instead of connecting to MongoDB."""
+    import app.db as db
+    monkeypatch.setattr(db, "get_db", Mock(side_effect=AssertionError("route test attempted real DB access")))
+    monkeypatch.setattr(_routes.receipt_capture, "approval_decided", Mock())
+    monkeypatch.setattr(_routes, "_place_manual_order", AsyncMock(
+        side_effect=AssertionError("route test reached unconfigured placement helper")))
 
 
 class _FakeCol:
@@ -98,7 +109,7 @@ def _make_app(*, approval_store=None, place_mock=None, limits_data=None):
         "_overall_store": lambda scope="overall": overall_stores.get(scope, overall_stores["overall"]),
     }
     if place_mock is not None:
-        patches["live_order_place"] = place_mock
+        patches["_place_manual_order"] = place_mock
 
     started = []
     for name, val in patches.items():
@@ -132,7 +143,7 @@ class TestOrderRules:
             assert d["exch"] == "NFO"
             assert d["lot_size"] == 65
             assert d["products"] == ["NRML", "MIS"]
-            assert "MARKET" in d["price_types"]
+            assert d["price_types"] == ["LIMIT", "SL-LMT"]
         finally:
             _stop(tc)
 
@@ -175,13 +186,15 @@ class TestPreview:
         finally:
             _stop(tc)
 
-    def test_market_order_preview(self):
+    def test_market_order_preview_is_rejected(self):
         tc = _make_app()
         try:
             body = {**_TICKET, "order_type": "MARKET"}
             d = tc.post("/live-broker/order/preview", json=body).json()
-            assert d["ok"] is True
-            assert d["children"][0]["prctyp"] == "MKT"
+            assert d["ok"] is False
+            assert d["children"] == []
+            assert d["placement_supported"] is False
+            assert any(v["check"] == "exchange_order_type" and not v["ok"] for v in d["verdicts"])
         finally:
             _stop(tc)
 
@@ -289,6 +302,11 @@ class TestApproveGate:
             r = tc.post(f"/live-broker/order/approvals/{aid}/approve", json={"token": tok}).json()
             assert r["placed"] is True
             assert place.await_count == 1
+            # The helper receives the exact instruction the operator approved,
+            # alongside the typed placement body; no implicit defaults replace it.
+            args, kwargs = place.await_args
+            assert isinstance(args[0], _routes._PlaceBody)
+            assert kwargs == {"approved_entry": created["summary"]["would_send"][0]}
             # approval is now consumed -> no longer pending
             assert tc.get("/live-broker/order/approvals").json()["pending"] == []
         finally:
@@ -324,16 +342,32 @@ class TestApproveGate:
         finally:
             _stop(tc)
 
-    def test_sell_ticket_not_auto_placed_but_reverts_to_pending(self):
+    def test_sell_ticket_not_queued_for_manual_placement(self):
         place = AsyncMock(return_value={"placed": True})
         tc = _make_app(place_mock=place)
         try:
             created = tc.post("/live-broker/order/approvals", json={**_TICKET, "side": "S"}).json()
+            assert created["ok"] is False
+            assert any(v["check"] == "manual_execution" and not v["ok"] for v in created["verdicts"])
+            assert tc.get("/live-broker/order/approvals").json()["pending"] == []
+            assert place.await_count == 0
+        finally:
+            _stop(tc)
+
+    def test_legacy_sell_ticket_rejection_is_nonretryable_and_rejectable(self):
+        place = AsyncMock(return_value={"placed": True})
+        store = ApprovalStore()
+        # New SELL approvals are rejected at creation. Seed an old queued ticket
+        # to verify the approval gate also rechecks pre-existing records.
+        created = store.create(payload={"ticket": {**_TICKET, "side": "S"}},
+                               summary={"underlying": "NIFTY"}, now_iso=_routes._utcnow_iso())
+        tc = _make_app(approval_store=store, place_mock=place)
+        try:
             aid, tok = created["approval_id"], created["token"]
             r = tc.post(f"/live-broker/order/approvals/{aid}/approve", json={"token": tok}).json()
             assert r["placed"] is False
             assert "BUY" in r["reason"]
-            assert r["retryable"] is True
+            assert r["retryable"] is False
             assert place.await_count == 0
             # NOT stranded: the approval is reverted to pending and stays in the queue
             # so the operator can Reject it.

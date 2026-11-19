@@ -88,7 +88,7 @@ def test_reported_charges_match_the_shared_statutory_model():
     comparison against the shared schedule."""
     out = _close(friction=_friction(enabled=False, costs_enabled=False))
     expected = round_trip_charges(entry_premium=_ENTRY, exit_premium=_EXIT,
-                                  quantity=_QTY, cfg=CostConfig(enabled=True))
+                                  quantity=_QTY, cfg=CostConfig(enabled=True), exit_ts=0)
     assert out["total_charges"] == round(float(expected["total_charges"]), 2)
 
 
@@ -153,7 +153,8 @@ def _custom_friction(*, costs_enabled: bool) -> FrictionConfig:
 def test_operator_set_brokerage_is_actually_charged():
     out = _close(friction=_custom_friction(costs_enabled=True))
     expected = round_trip_charges(entry_premium=_ENTRY, exit_premium=out["exit_fill_price"],
-                                  quantity=_QTY, cfg=_custom_friction(costs_enabled=True).costs)
+                                  quantity=_QTY, cfg=_custom_friction(costs_enabled=True).costs,
+                                  exit_ts=0)
     assert out["total_charges"] == round(float(expected["total_charges"]), 2), (
         "the deployment's own cost schedule was discarded for module defaults")
 

@@ -12,6 +12,7 @@ import { apiDotClass, describeApiHealth, initialApiHealth, nextApiHealth } from 
 import MarketHeader from "@/components/MarketHeader";
 import TokenCountdown from "@/components/TokenCountdown";
 import ScrollToTopButton from "@/components/common/ScrollToTopButton";
+import BuildIdentity from "@/components/BuildIdentity";
 
 const NAV_GROUPS = [
   {
@@ -58,7 +59,6 @@ export default function Layout({ children }) {
             <Zap className="w-4 h-4 text-info" />
           </div>
           <div className="font-semibold tracking-tight">AlphaForge</div>
-          <div className="ml-auto text-[10px] uppercase tracking-wider text-dimmer font-mono">v1.0</div>
         </Link>
         <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-5">
           {NAV_GROUPS.map((group) => (
@@ -97,6 +97,7 @@ export default function Layout({ children }) {
         </nav>
         <div className="px-3 py-3 border-t border-line text-[11px] text-dimmer">
           <ApiStatus />
+          <BuildIdentity />
           <div className="mt-1 font-mono">local Docker workspace</div>
         </div>
       </aside>

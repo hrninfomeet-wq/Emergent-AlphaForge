@@ -7,6 +7,7 @@ import { dateToMs, msToDate } from "@/lib/time";
 import { exportOptConfig, exportOptJob, exportOptAlternatives } from "@/lib/optExports";
 import { hasFiniteOptimizerCandidate } from "@/lib/optimizerCandidate";
 import { auditInstrumentScale, isPointDenominatedParam, pctToPointsPreview } from "@/lib/instrumentBounds";
+import { auditOptimizerBoundOverrides } from "@/lib/optimizerBoundAudit";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -282,6 +283,7 @@ const autoRunName = (cfg) => `${cfg.strategy_id} · ${cfg.instrument} · ${cfg.o
 export default function Optimizer() {
   const navigate = useNavigate();
   const [strategies, setStrategies] = useState([]);
+  const [indicatorCatalog, setIndicatorCatalog] = useState({});
   const [presets, setPresets] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [config, setConfig] = useState(loadSetup);
@@ -348,7 +350,10 @@ export default function Optimizer() {
   }, [currentJobId]);
 
   useEffect(() => {
-    api.listStrategies().then((d) => setStrategies(d.items || []));
+    api.listStrategies().then((d) => {
+      setStrategies(d.items || []);
+      setIndicatorCatalog(d.indicator_param_catalog || {});
+    });
     api.listOptJobs(1000).then((d) => setJobs(d.items || []));
     api.listPresets().then((d) => setPresets(d.items || []));
     api.listProfiles().then((d) => setProfiles(d.items || []));
@@ -377,27 +382,13 @@ export default function Optimizer() {
     );
   }, [selectedStrategy]);
 
-  // Which bounds are actually in force, and which overrides cannot bite.
-  //
-  // The strategy Select never cleared `param_overrides`, so a confluence_scalper
-  // job carried 12 overrides left over from earlier fibonacci/atr sessions. Eleven
-  // named params confluence_scalper does not declare and were silently ignored;
-  // the twelfth widened spot_target_pts from the declared max of 200 to 300 — and
-  // nothing on screen said so, because this panel only renders the SELECTED
-  // strategy's params. The widened bound is not removed here (it may well be what
-  // the operator wants); it is made visible, which is the part that was missing.
-  const boundsAudit = useMemo(() => {
-    const declared = new Set(Object.keys(selectedStrategy?.parameter_schema || {}));
-    const overrides = config.param_overrides || {};
-    const isSet = (o) => o && (o.min !== undefined || o.max !== undefined);
-    const active = [];
-    const foreign = [];
-    for (const [name, ov] of Object.entries(overrides)) {
-      if (!isSet(ov)) continue;
-      (declared.has(name) ? active : foreign).push(name);
-    }
-    return { active: active.sort(), foreign: foreign.sort() };
-  }, [selectedStrategy, config.param_overrides]);
+  // Which saved overrides the optimizer can apply to this strategy's effective space.
+  const boundsAudit = useMemo(() => auditOptimizerBoundOverrides({
+    parameterSchema: selectedStrategy?.parameter_schema,
+    indicatorCatalog,
+    overrides: config.param_overrides,
+    expandIndicatorPeriods: config.optimize_indicator_periods,
+  }), [selectedStrategy, indicatorCatalog, config.param_overrides, config.optimize_indicator_periods]);
 
   const clearForeignOverrides = () => {
     const next = { ...(config.param_overrides || {}) };
@@ -1425,11 +1416,11 @@ export default function Optimizer() {
             </div>
             <div className="flex items-center gap-2">
               <Switch checked={config.optimize_indicator_periods} onCheckedChange={(v) => setConfig({ ...config, optimize_indicator_periods: v })} data-testid="opt-indicator-periods-switch" />
-              <span className="text-xs text-dim">Optimize indicator periods</span>
-              <Hint label="Optimize indicator periods">Also tunes RSI / MACD / ATR / EMA / ADX lengths (indicators are recomputed every trial). This enlarges the real search space and is slower, so <b>give it more trials</b> when on. <b>Default OFF.</b></Hint>
+              <span className="text-xs text-dim">Expand indicator-period search where supported</span>
+              <Hint label="Expand indicator-period search"><b>OFF:</b> strategy-declared periods may still be searched within their schema. <b>ON:</b> requests addition of missing catalog periods (RSI / MACD / ATR / EMA / ADX / CHOP / swing); declared periods are not duplicated. Premium-native strategies are forced OFF. Optimizer pinning rules may also keep parameters fixed. The completed job's effective parameter space is authoritative. <b>Default OFF.</b></Hint>
             </div>
             <div className="text-[10px] text-dimmer -mt-1 leading-snug">
-              Also tune RSI / MACD / ATR / EMA / ADX lengths (indicators are recomputed per trial). Slower but searches the real space.
+              ON requests missing catalog periods; premium-native runs stay OFF. Check the completed job's effective space.
             </div>
             <div className="pt-2 border-t border-line">
               <div className="flex items-center gap-2 mb-2">
@@ -1565,10 +1556,32 @@ export default function Optimizer() {
               {boundsAudit.foreign.length > 0 && (
                 <div className="text-[10px] rounded border border-amber-900 bg-amber-950 text-warning p-2 mb-2 flex items-start gap-2" data-testid="opt-foreign-overrides">
                   <span className="flex-1">
-                    {boundsAudit.foreign.length} bound override{boundsAudit.foreign.length > 1 ? "s" : ""} below {boundsAudit.foreign.length > 1 ? "belong" : "belongs"} to a different strategy
-                    and cannot affect this search: <span className="font-mono">{boundsAudit.foreign.join(", ")}</span>.
+                    {boundsAudit.foreign.length} saved override{boundsAudit.foreign.length > 1 ? "s" : ""} are absent from this strategy and the indicator catalog, so they do not enter this search: <span className="font-mono">{boundsAudit.foreign.join(", ")}</span>.
                   </span>
                   <button type="button" onClick={clearForeignOverrides} className="underline shrink-0" data-testid="opt-clear-foreign-overrides">clear</button>
+                </div>
+              )}
+              {boundsAudit.ignored.length > 0 && (
+                <div className="text-[10px] rounded border border-amber-900 bg-amber-950 text-warning p-2 mb-2 space-y-1" data-testid="opt-ignored-overrides">
+                  <div>These saved overrides do not change the effective search:</div>
+                  {boundsAudit.ignored.map(({ name, reason }) => (
+                    <div key={name} className="font-mono">{name}: <span className="font-sans">{reason}</span></div>
+                  ))}
+                </div>
+              )}
+              {boundsAudit.activeFixed.length > 0 && (
+                <div className="text-[10px] rounded border border-line text-dimmer p-2 mb-2" data-testid="opt-fixed-overrides">
+                  Fixed-value overrides are active for: <span className="font-mono">{boundsAudit.activeFixed.join(", ")}</span>. These parameters will not vary in the search.
+                </div>
+              )}
+              {boundsAudit.savedBounds.length > 0 && (
+                <div className="text-[10px] rounded border border-line text-dimmer p-2 mb-2" data-testid="opt-saved-bounds">
+                  Saved bound overrides: <span className="font-mono">{boundsAudit.savedBounds.join(", ")}</span>. This setup view cannot confirm eligibility for every optimizer rule, including sizing/risk pinning; check the completed job&apos;s effective parameter space.
+                </div>
+              )}
+              {boundsAudit.savedCatalog.length > 0 && (
+                <div className="text-[10px] rounded border border-line text-dimmer p-2 mb-2" data-testid="opt-saved-catalog-overrides">
+                  Saved overrides for catalog-only periods: <span className="font-mono">{boundsAudit.savedCatalog.join(", ")}</span>. {boundsAudit.expandIndicatorPeriods ? "Expansion was requested, but premium-native strategies are forced OFF; check the completed job's effective parameter space." : "These periods are not added while expansion is OFF."}
                 </div>
               )}
               {numericParams.map(([name, def]) => {
@@ -1616,19 +1629,21 @@ export default function Optimizer() {
             </div>
           ) : (
             <div className="text-[11px] text-dimmer" data-testid="opt-bounds-summary">
-              {boundsAudit.active.length === 0 && boundsAudit.foreign.length === 0
-                ? "Using the strategy's declared bounds for every parameter."
+              {boundsAudit.savedBounds.length === 0 && boundsAudit.savedCatalog.length === 0 && boundsAudit.activeFixed.length === 0 && boundsAudit.foreign.length === 0 && boundsAudit.ignored.length === 0
+                ? "Using the strategy's declared search space; the completed job's effective parameter space is authoritative."
                 : <>
-                    {boundsAudit.active.length > 0 && (
-                      <span className="text-warning">
-                        {boundsAudit.active.length} bound{boundsAudit.active.length > 1 ? "s" : ""} overridden:{" "}
-                        <span className="font-mono">{boundsAudit.active.join(", ")}</span>.
-                      </span>
+                    {boundsAudit.savedBounds.length > 0 && <span>{boundsAudit.savedBounds.length} saved bound override{boundsAudit.savedBounds.length > 1 ? "s" : ""}; effective status is confirmed on the completed job.</span>}
+                    {boundsAudit.savedCatalog.length > 0 && <span>{" "}{boundsAudit.savedCatalog.length} catalog-only override{boundsAudit.savedCatalog.length > 1 ? "s" : ""} saved.</span>}
+                    {boundsAudit.activeFixed.length > 0 && (
+                      <span className="text-dimmer">{" "}{boundsAudit.activeFixed.length} fixed-value override{boundsAudit.activeFixed.length > 1 ? "s" : ""} active.</span>
                     )}
                     {boundsAudit.foreign.length > 0 && (
                       <span className="text-dimmer">
-                        {" "}{boundsAudit.foreign.length} left over from another strategy (ignored).
+                        {" "}{boundsAudit.foreign.length} absent from this strategy/catalog (not used).
                       </span>
+                    )}
+                    {boundsAudit.ignored.length > 0 && (
+                      <span className="text-warning">{" "}{boundsAudit.ignored.length} saved override{boundsAudit.ignored.length > 1 ? "s" : ""} ignored.</span>
                     )}
                     {/* A collapsed panel must not hide the scale warning — that
                         is exactly how the SENSEX bounds went unnoticed. */}

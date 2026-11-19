@@ -226,7 +226,8 @@ def apply_costs_to_trade(trade: Dict[str, Any], *, cost_cfg: CostConfig,
     entry_fill = entry + spread_pts_for_premium(entry, cost_cfg) / 2.0
     exit_fill = max(0.0, exit_ - spread_pts_for_premium(exit_, cost_cfg) / 2.0)
     charges = round_trip_charges(entry_premium=entry_fill, exit_premium=exit_fill,
-                                 quantity=qty, cfg=cost_cfg)["total_charges"] if cost_cfg.enabled else 0.0
+                                 quantity=qty, cfg=cost_cfg,
+                                 exit_ts=trade.get("exit_ts"))["total_charges"] if cost_cfg.enabled else 0.0
     gross_rupees = round((exit_fill - entry_fill) * qty, 2)
     net_rupees = round(gross_rupees - charges, 2)
     return {

@@ -1,5 +1,125 @@
 # Learning Log
 
+## 2026-11-02 — Session-change rollout
+
+Core lesson: verify a displayed financial value against the exact served quote,
+then change the chart timeframe to detect accidental candle-based calculations.
+
+Confirmed approaches: after fresh operator flat-account confirmation, recreate
+only app services; preserve Mongo identity/start time; compare host and running
+source fingerprints. Decimal arithmetic from actual SSE fields matched the
+Chrome header on 1m/5m/1d. Tooltip retained the reference and quote time; browser
+reported no errors. Current broker position/order books were empty after rollout.
+
+Dead ends: do not guess provenance endpoint names (`/api/version` is absent;
+the documented source route is `/api/build-info`). Do not count an after-hours
+snapshot as proof of moving live ticks. Screenshot and rollout evidence are in
+docs/chart-terminal/session-change-checkpoint.md.
+
+## 2026-11-02 — Chart day-change reference
+
+Core lesson: a candle return is not a trading-day return. Keep the header quote
+and previous session close together; never derive the day change from the
+selected timeframe's candle open.
+
+Confirmed approaches: pass the already-decoded Upstox close reference through
+the chart's sanitized stream, validate exact instrument identity, expose the
+reference in a tooltip, and label old quotes with their actual India date.
+Focused tests cover arithmetic, missing data and midnight; a memory-only mutation
+proves the stream regression detects the omitted field. Independent review traced
+the same field through the existing market header. Production build passes.
+
+Dead ends: a test helper's default argument replaced explicit `undefined`, so
+the missing-field fixture had to assign it after construction. A prior day's flat
+confirmation and an empty local guard are not proof of current broker exposure.
+Deployment checkpoint: docs/chart-terminal/session-change-checkpoint.md.
+
+## 2026-11-02 — Independent indicators and styled drawings
+
+Core lesson: indicator type is not indicator identity. Keying series by `ema`
+silently discards a second EMA; assign stable instance IDs and derive child
+series/pane IDs from them, while keeping calculation type separate.
+
+Confirmed approaches: independent linear-series fixture verifies EMA20/EMA50;
+React tests change/remove one peer without touching the other; the installed
+drawing library parser is a second check on saved semantic anchors/styles.
+Real Chrome reload confirms persistence and visual appearance. Tests passed:
+22 Node and 22 React, plus production builds. Frontend-only rollout avoids a
+trading backend restart when broker exposure cannot be freshly read.
+
+Dead ends: exact floating-point equality for recursive EMA; mistaking a browser
+background-tab fullscreen refusal for a renderer bug; trusting an agent handoff
+after its usage limit before checking files. Agent wrote no source; root finished
+the scoped work. Current checkpoint is docs/chart-terminal/tools-extension-checkpoint.md.
+
+## 2026-11-01 — Chart terminal rollout and visual acceptance
+
+Core lesson: a DOM assertion does not prove that a trading overlay is visible.
+The P&L chip existed in React tests but the chart canvas painted above it. An
+isolated, clearly synthetic browser fixture exposed this; isolating the canvas
+stacking context made the chip visible, verified before the final app rebuild.
+
+Confirmed approaches: inspect authenticated empty books plus guard/conditional
+state after operator flat confirmation; recreate only app services; preserve
+Mongo; compare host/running source fingerprints; check real index/equity/F&O
+history and UI pagination; check viewer lease cleanup separately from execution
+ownership. Final selected checks: 112 Python, 19 React, 18 Node; production builds
+pass. The real app is deployed locally and the next gate is an open-market run.
+
+Dead ends to avoid: attempting broker login in the synthetic preview (it has no
+broker backend), or repeatedly starting the feed outside market hours. Existing
+feed supervision intentionally stops it when MARKET_CLOSED. Do not alter that
+policy merely to make a Sunday test display a green live badge. Source and UI
+evidence are saved in `docs/chart-terminal/implementation-checkpoint.md`.
+
+## 2026-11-01 — Chart terminal source and independent review
+
+Core lesson: desired subscription ownership is not proof that a transport send
+reached the provider. An uncertain chart subscription must be explicitly retried
+when execution takes ownership; otherwise a live position can appear covered
+while receiving no price updates.
+
+Confirmed approaches: scoped agents wrote chart data, math and UI files while
+root owned shared feeds and integration. Fake sockets and the real stream loop
+exposed failed-send promotion, recycled derivative identity, REST/SSE ordering,
+and cross-product protection bugs. Each has a regression and correction. Root's
+selected run passed 112 Python, 19 React and 18 Node checks; CI production build
+passed. Public-master search confirmed symbols beyond the stored indices.
+
+Dead ends to avoid: treating a token as permanent contract identity, a fresh
+price as proof of a fresh broker book, or a browser REST refresh as sufficient
+when the server accumulator still holds old extrema. Never replace missing index
+volume with a mean labelled VWAP. Repeated usage limits were recovered from
+file-owned checkpoints without restarting research or discarding prior work.
+
+Remaining limit: Docker and the API were stopped. No running-app or market-session
+pass is claimed, and no broker/session/order action was performed. Await the
+flat-account confirmation required by HANDOFF.md before restarting trading services.
+
+## 2026-10-26 — Conditional rollout to local main
+
+Core lesson: distinguish a feature commit from a build made from the whole dirty checkout. Selectively stage feature hunks while preserving unrelated user work, then disclose that the running image also contains retained local changes.
+
+Confirmed approaches: fetched origin and confirmed local main matched; staged only conditional hunks in shared executor/router/server files, plus feature files and build dependencies; committed feature as 91a5977. Production image build passed; recreated app services with --no-deps, preserving Mongo's identity/start time. Verified actual conditional Python hashes, API heartbeat, all supported metadata responses and rendered paper-default panel. Evidence: `docs/quick-trade-audit/ROLLOUT.md` and `rollout-verification.json`.
+
+Dead ends: Windows subprocess text-mode newline translation made a selective Git patch fail; byte-preserving input applied it without modifying working files. Browser indices/locators became stale when the user moved the embedded tab into Upstox login; inspected the current tab and left the authentication flow intact. No speculative login or trading action. Behavioural tests and live acceptance are still unverified; configuration readiness is not authenticated-session readiness. Remote origin/main not pushed under the local-main interpretation.
+
+## 2026-10-26 — Running Quick Trade page checked in Chrome
+
+Confirmed: the user's existing localhost Live Broker tab renders the legacy Quick Trade form, without conditional/manual tabs. The displayed frontend/backend source capture is 2026-10-25T06:12:11.779174+00:00 with matching prefix fbe29b83e58a; matching means the two running builds agree, not that they include current checkout changes. The checkout QuickTrade component contains the new tabs. The startup script explicitly skips rebuilding a healthy stack.
+
+Core lesson: source completion and deployment are separate checkpoints. Starting an existing image does not import new source. Dead end avoided: do not treat this as a browser-cache problem or rebuild a trading backend blindly. The page reports both broker/data sessions expired and broker exposure unknown. This inspection made no trading, login, build or restart changes; a browser-panel open was requested in Codex.
+
+## 2026-10-26 — Conditional Quick Trade implementation
+
+Core lesson: durable intent includes amendments and cancellation state, not just the original entry. Save the exact pending stop-price pair before modifying it; otherwise a lost acknowledgement makes the legitimate new broker price look foreign after recovery.
+
+Confirmed approaches: file-owned rules/adapter/UI work integrated by the primary; existing transmit boundary retained; root source review identified canceled-preview redemption, exit-band rounding and latest-tick-only crossing gaps and implemented corresponding guards. Python compileall, Babel parsing and whitespace checks passed; evidence is in `docs/quick-trade-audit/implementation-syntax-checks.txt`. These are not behavioural checks.
+
+Dead ends: a helper's usage limit prevented final UI follow-up; primary completed it from the shared checkpoint. Do not treat an accepted cancel as a zero fill, an unavailable book as flat, historical audit tests as new-feature evidence, or a process-local mutex as cross-process protection. An initial documentation patch failed on a mismatched anchor; corrected the anchor before retrying, with no partial success claimed.
+
+Checkpoint: source saved, no deployment/live orders/session changes. Operator deferred tests; behavioural correctness, runtime integration and live acceptance remain not verified. Full status and limitations: `docs/quick-trade-audit/IMPLEMENTATION.md`. Next session starts with isolated tests/paper runs, not real-money experimentation.
+
 Orchestrator session log: one core lesson, confirmed approaches, and dead ends per execution,
 so the next session starts smarter. Newest entry first.
 
@@ -1814,6 +1934,203 @@ never been run on a weekday.
   [Yahoo historical candles](https://query1.finance.yahoo.com/v8/finance/chart/%5EBSESN?interval=5m&range=1mo&includePrePost=true),
   [NSE CAS](https://www.nseindia.com/static/products-services/closing-auction-session).
 
+## 2026-10-08 — SENSEX afternoon forecast, 14:22 IST cutoff
+
+- Decision use: a closing-price research judgment, not an instruction to trade. Done-test:
+  current quote and independent prior close reconciled; one point/range/invalidation;
+  dated inputs, audit and overlay saved before the outcome.
+- Confirmed: AlphaForge read-only API latest complete minute was 14:21, available 14:22,
+  close 71,419.15; retrieved 14:22:16 IST. Market header at 14:21:26 showed 71,450.88.
+  BSE official Oct 7 close 72,638.70 agrees with Moneycontrol and dated market reports.
+  Day change from the completed anchor is -1,219.55 points (-1.67893%).
+- Confirmed: header open 72,668.00/high 72,693.97 agree with Moneycontrol; the warehouse
+  first open 72,479.99/high 72,510.33 omit opening extremes despite 307/307 minute rows.
+  Cause unproven. Keep both, use corroborated header extremes; no warehouse repair made.
+  Updated low through the anchor 71,418.79; full observed range 1,275.18, versus
+  last-ten BSE daily-range median 689.385 (ratio 1.8497).
+- Confirmed: Yahoo quote 71,522.57 is timestamped 14:07:09 (delayed), not synchronized
+  with AlphaForge. Its chartPreviousClose 73,067.80 is stale; not used. Moneycontrol's
+  earlier 13:58 quote 71,574.32 is consistent with an earlier point on the declining path.
+- Confirmed: 46 exact-cutoff historical anchors Aug 3–Oct 7 paired with independently
+  fetched BSE official closes, no missing anchor dates. Three last-warehouse/official-close
+  differences retained (Aug24 +1.02, Sep23 -1.49, Oct5 -70.24); BSE targets used.
+- Confirmed: 14:22 closing-range audit, lookback 10, nominal 80%, 36 rolling test dates:
+  empirical band hit 22/36; terminal five hit 3/5. Point MAE 160.63 index points /
+  21.34 bps; average width 389.37; largest miss outside band 370.44 points.
+  This is historical research on potentially backfilled candles, not forward validation
+  or an 80% probability for this call. Cutoff updated from provisional 14:18 as fresh
+  bars arrived; no parameter tuning or claim that spent historical tests are new holdouts.
+- Latest-ten Sep23–Oct7 empirical baseline: point 71,453.055135; endpoints
+  71,339.824250 / 71,588.463945. Independently recomputed in JavaScript from dated rows.
+- Locked forecast: **point 71,400; working official-close band 71,300–71,600**.
+  Endpoints rounded outward; point tilt -53.055135 versus the historical baseline.
+  Limited confidence. Likely: weak close near the day's lows because the 13:35 bounce
+  to 71,733.52 and 14:15 bounce to 71,589.22 failed, followed by another lower low.
+- News check: Moneycontrol's dated Oct 8 coverage reports broad weakness, VIX up 8%,
+  Brent around USD104 and weakness in oil-sensitive shares. These are attributed report
+  snapshots, not synchronized tick-level causal proof. No inferred dealer gamma or OI.
+- CAS: official-close residuals already include auction uncertainty; no additional
+  reserve/uplift. Latest-ten 15:14-minute-close to official-close proxy: median +20.755,
+  median absolute 40.84, min -139.02, max +123.90 points. Not a pure causal CAS estimate.
+- Risk / flip: completed 15-minute close above 71,600 invalidates continued weakness.
+  Opposite explanation: an extended selloff can finish with sharp short covering;
+  continuation can also breach 71,300. Auction imbalance remains unavailable.
+- Yesterday scored without rewriting: Oct7 actual 72,638.70; original point 73,000 was
+  361.30 too high, while the 72,450–73,350 band hit. The directional recovery call
+  was too optimistic; a 900-point band hit is not a precise point success.
+- Core lesson: minute-count completeness does not certify opening OHLC; corroborate
+  session extremes separately and keep real-time quotes distinct from matched-cutoff history.
+- Confirmed approaches: bounded read-only AlphaForge GETs, independent BSE daily targets,
+  exact available minute anchors, deterministic audit and independent arithmetic.
+- Dead ends: default sandbox socket access required reviewed read-only escalation;
+  unavailable BSE circular HTML was not treated as proof of expiry rules; no trading,
+  authentication, service restart, feed control or warehouse mutation occurred.
+- Checkpoints: docs/market-research/2026-10-08-sensex-{alphaforge,latest,input,audit,derived,forecast}.json,
+  2026-10-08-bse-official-history.csv and 2026-10-08-market-header-1421.json.
+- Sources: [AlphaForge](http://localhost:3000/),
+  [BSE archive](https://www.bseindia.com/indices/IndexArchiveData.html),
+  [Moneycontrol quote](https://www.moneycontrol.com/indian-indices/bse-sensex-4.html),
+  [Moneycontrol Oct8 coverage](https://www.moneycontrol.com/news/business/markets/stock-market-live-updates-nifty50-share-price-sensex-share-price-crude-fii-gift-nifty-rupee-latest-updates-08-10-2026-alpha-liveblog-14047145.html),
+  [NSE CAS](https://www.nseindia.com/static/products-services/closing-auction-session).
+
+## 2026-10-09 — NIFTY closing forecast and completed AlphaForge skill audit
+
+- Frozen NIFTY forecast at10:32:09 IST: point22500,working official-close band22350-22650. Latest AlphaForge/Upstox header22493.80 at10:31; independently matched exact10:28 completed anchor22496.50. Prior official NSE Oct8 close22231.80. No today's outcome known or used.
+- Calibration:47 post-Aug3 sessions paired with NSE daily reports; latest10Sep24-Oct8 for current return distribution. Absolute-return band22355.656967-22637.343033, rounded outward to50points. Historical median22431.736088; frozen point tilt+3.50versus spot benchmark/+68.263912versus median.37 rolling forecasts hit26closes; nominal80% setting is not demonstrated future coverage.
+- Likely: recovery day consolidating near22500; remaining-session point bias neutral (+6.20versuslatestlivequote). Higher lows and IT-led rebound support structure; Reuters reports elevated oil and hawkish RBI background as constraints. No index-volume/VWAP or inferred dealer-gamma claims.
+- Invalidation: first complete15m candle after issuance closingbelow22440 invalidates hold-near22500thesis. Any replacement must be newly timestamped; original remains scored. CAS already included in official-close residuals, no extra uplift.
+- Earlier SENSEX Oct7 outcome: original73000 versus72638.70, error+361.30, band72450-73350hit but direction wrong from72863.35livequote. First15m closebelow72780 occurred13:00 at72722.49. Frozen median point error258.906860; discretionarytiltadded102.393140error.15:15proxy72647.28 -> reported/officialclose gap-8.58. Preserved BSE Oct8-download history confirms Oct7officialclose; latest public BSErequest403was not bypassed.
+- AlphaForge skill work completed: read-only app export, separate NIFTY/SENSEX/horizon calibration, basis-point scores, exact intraday target validation, no SENSEX implicit100pointwidth, official-close/calendar gates, no zero-volume VWAP, explicit forecast lifecycle. Scripts18tests passed; independentNode273rawanchor/2493arithmeticchecks; installed5filehasheschecked. Subsequent lifecycle prose reviewed by primary; original scripts unchanged.
+- Data red flags: SENSEX Oct5warehouse72312.23 differs from BSE72382.47; other2smalldifferences. Running audit calendar falselyflaggedSep14holidaymissing while sourcecorrected. These findings were recorded; app code, warehouse and trading controls unchanged.
+- Core lesson: an interval hit is not a direction or point success; original forecasts and first invalidation must remain visible. Confirmed approaches: exact-cutoff appdata, officialtargetreconciliation, independentarithmetic, versionedjudgment. Dead ends: stalecalendar, treating rowcountsaspriceaccuracy, automaticpositiveCASadjustment, and promoting a model on spent historical dates.
+- Checkpoints/evidence: C:/Users/haroo/Documents/Codex/2026-10-06/based-on-the-market-behavior-in/work/forecast_2026-10-09 and work/alphaforge_revision. Reports in outputs/nifty_forecast_2026-10-09.md, sensex_postclose_review_2026-10-07.md, alphaforge_prediction_audit_2026-10-07.md. Today's forecast remains pending. No automation or trades created.
+
+
+## 2026-10-21 — AlphaForge onboarding: result fidelity and live safety
+
+- Deliverable: a checked architecture and six-issue evidence register for future improvements; checkpoint: `docs/ONBOARDING_REVIEW_2026-10-21.md`. The primary retained live-safety analysis; Sol agents traced backtest/optimizer behavior and Luna mapped architecture. Reports were reviewed before merging their findings.
+- Confirmed: checkout `main` at `ff9cbe3`; pre-existing learning-log edits and closing-range research files preserved. No application code, strategy logic, schema, trading state, credentials, service startup/rebuild, commit or push changed.
+- Confirmed: Docker engine pipe unavailable; local API health connection refused. Exact saved-record/UI incidents remain unverified. No live reset, kill, deployment, authentication or broker request was attempted.
+- Critical source finding: `Stop ALL paper trading` is wired through `stopAllDeployments` to `/deployments/stop-all`, which also flattens/disarms live deployments. Verified button, mounted handler, API mapping and backend branch; never invoked. Paper-page location does not establish paper-only scope.
+- Confirmed: current account reset code clears persisted halt/latch and resumes the engine. Existing fake-state tests pass; independent execution of all 8 boolean gate combinations allowed entry only when all stops were clear. Isolated pause/resume kept the deployment in paper mode after demotion.
+- Confirmed: current validator accepts positive out-of-search-range values with findings and rejects tested infeasible/type/non-finite values; the acknowledgment chain exists in source. No wizard submission occurred.
+- Confirmed: saved-run pane/CSV helpers share envelope/identity logic; focused synthetic tests pass. Requested versus resolved sizing and trimmed wizard input remain reproduction targets. Optimizer seed inclusion does not guarantee a final option-P&L floor: Grid and spot shortlist selection impose limits.
+- Confirmed: Confluence's indicator toggle OFF retained its declared EMA search dimensions; ON injected extra indicator periods. Advanced bounds changed the effective helper space. Legacy Explosive Reversal emits absolute point exits; its exact NIFTY/SENSEX performance difference was not replayed and no strategy was tuned.
+- Evidence: focused pytest groups returned 23, 48, 81 and 7 passes, respectively; exact commands and scope limitations are in the checkpoint. Additional pure/AST checks did not import the application runtime or contact data services. This is not a full-suite or live-safety certification.
+- Core lesson: trace the writer, effective data envelope and action scope behind each screen label before trusting a result or clicking a safety control.
+- Confirmed approaches that worked: bounded offline behavioral checks; independent entry-gate truth table; primary review of delegated traces; preserving requested versus resolved execution distinctions; checkpointing unresolved reproduction work.
+- Dead ends to avoid: treating historical fixes as current reproduction, assuming the launcher always rebuilds both images, assuming paper controls cannot affect live positions, or blaming a button for weaker optimization before comparing identical effective configs and ranking stages.
+- Next-session boundary: follow the owner's next instruction; reproduce first on recorded/isolated inputs. Show a proposed diff and wait for approval before any kill-switch, latch or deploy-validation change. Closing-range forecasting remains out of scope.
+
+
+## 2026-10-23 — audit fixes, local validation checkpoint
+
+- User authorized fixes with cumulative saves. Active checkpoint: `docs/AUDIT_FIX_CHECKPOINT_2026-10-23.md`; per-agent evidence: `docs/audit-fixes/`. Existing source/data edits preserved. No broker orders, auth, live deployment, service restart or database write.
+- Core lesson: an order approval must bind the resolved execution fields and the normalized confirmation, not merely the form inputs. A source fix is not a running fix: the container still needs a separately safe rollout.
+- Confirmed approach: isolate broker I/O behind forbidden-call stubs; reproduce unsupported-ticket routing first, then assert rejection before any broker method. Compare actual approved symbol/quantity/price with the fresh executor build.
+- Confirmed approach: fetch full saved-run detail, resolve effective (not requested) execution policy, suppress stale async results, and verify against real recorded configurations. Four audit samples now preserve their effective cost/filter/lot/window fields in the new helper.
+- Confirmed approach: retain explicit numeric saved STT rates; automatic defaults select the rate using the sale date in IST. Boundary and caller tests passed without rewriting saved results.
+- Dead ends avoided: raising manual execution limits to match a misleading preview; replacing one tax constant for mixed-date history; inferring effective optimizer bounds from incomplete frontend metadata; treating interrupted agents or passing checkout tests as proof about the running app.
+- Evidence so far: 401 targeted isolated tests passed; production frontend build under CI=true passed. Protected paper-stop proposal has two isolated checks and remains unapplied pending approval; running kill-switch diff saved for review. Final UI and rollout status belongs to the master checkpoint.
+- Final local checkpoint: 406 selected pytest cases passed after adding malformed-approval coverage; 3 actual React confirmation cases passed with arming/redemption forbidden. Root accepted the reviewed agent changes, including the conservative O1 revision. HANDOFF, AGENT_TODO and CHANGELOG point to the saved scope and remaining work. No connected-stack rollout, commit or push.
+- Review limit retained: preserving a saved run's form/payload is necessary but does not certify historical-vs-forward execution parity. Strategy exit-hint precedence, partial fills, exchange-fee updates and the unreplicated owner incidents remain explicitly open; they are not hidden by passing local tests.
+
+## 2026-10-24 — approved audit rollout and paper-stop reporting review
+
+- Operator approved both shown safety diffs and rebuilding, confirming no broker positions/working orders. Root retained rollout ownership; the independent agent reviewed paper-only isolation. Mode, guard, deployment and order-intent checks were repeated immediately before restart and saved under `docs/audit-fixes/rollout-*.json`.
+- Review found a real reporting defect in the first paper-only proposal: the square-off helper returns error summaries, so counting all summaries falsely reports failed closes as completed. Four isolated cases reproduced the error. A supplemental diff was shown, explicitly approved and applied; completed/failed/skipped outcomes are now separate and incomplete closes warn in the UI.
+- Confirmed: final selected integration run passed 443 cases. Both Docker images built; backend/frontend restarted with MongoDB untouched. Running backend hashes and served frontend source maps matched the reviewed files. Health and page GETs passed. No paper-stop, order, kill-switch, live-enable or authentication action was invoked as a test.
+- Confirmed post-restart: mode LIVE_OFFLINE; no guarded positions, live deployments, open live journal rows or unsubmitted intents. Nine paper deployments remain active and existing order-intent count remains 21. Flattrade session reports expired; no agent renewal attempted. This is app-state evidence, not independent broker-book certification.
+- Core lesson: count completed outcomes, not returned rows. A safety action needs truthful partial-failure reporting as well as correctly isolated side effects.
+- Confirmed approaches: independent review before rollout, fake-I/O failure/race cases, operator-confirmed flat exposure plus immediate app checks, and source hashes/source maps to prove which code is running. Retain old image IDs for recovery.
+- Dead ends avoided: treating a healthy HTTP response as code freshness; treating paper-stop success toasts as proof every close completed; repeating authentication to diagnose an expired daily session. A UI test fixture needed parentheses around an object-return arrow function, and the read-only rules check needed the source-defined route rather than an inferred URL.
+- Scope retained: unresolved original reports, partial-fill accounting, broader exchange-fee schedules and live market-session validation remain open. No commit or push was performed.
+
+
+## 2026-10-24 — evidence surfaces, final build and Chrome review
+
+- Core lesson: submitted instruction, approval, order fill, journal estimate and exit protection are different evidence. Unknown must remain visible; a missing fill ledger cannot be repaired by presenting ordered quantity as filled.
+- Confirmed approach: isolate a read-only receipt projection, whitelist public fields, independently derive the partial-fill arithmetic, and reject contradictory/malformed evidence. Forty-five focused Python checks, 25 React checks and nine Node comparison fixtures pass; details are in `docs/PROPOSAL_IMPLEMENTATION_2026-10-24.md`.
+- Confirmed approach: inspect the actual broker namespace. Chrome caught a false receipt warning because the journal display symbol is Upstox-formatted; `noren_tsym` is the correct comparison to the stored Noren instruction. Fixed, regression-tested, rebuilt and rechecked before reporting completion.
+- Confirmed approach: shared captured-source hashes identify dirty builds better than a Git SHA. Both images and the inspected checkout scope match; runtime mounts/dependencies/continuous checkout freshness remain outside that claim. JSON build metadata is compiled into the JS bundle and is absent as a standalone source-map entry; verify the literal plus source-map code parity.
+- Confirmed approach: full saved-run/job reads reveal mismatched data intervals, entry windows, costs and exits. The sampled Confluence comparison demonstrates settings mismatch, not an optimizer regression. Dates alone never prove identical candle data.
+- Dead ends: using the display symbol as broker identity; assuming submitted means filled; labeling an in-memory approval queue as durable history; interpreting npm.cmd regex pipes through Windows shell; querying deployment status RUNNING when stored active status is ACTIVE. Use node.exe argument arrays and read the actual stored enums.
+- Checkpoints preserved agent work when usage limits interrupted P1/P2. Root reviewed and integrated their files, completed critical P3 and verified final UI/source parity. No live actions, protected-control edits, historical rewrites, schema migrations, commits or pushes. Durable fill/approval/exit reconciliation and original unresolved reports stay open.
+
+
+## 2026-10-24 — resumed broker snapshot receipt comparison
+
+- Core lesson: use existing timestamped broker reads before adding another poller or persisted schema. Exact order identity plus fresh read evidence can support a comparison, but cannot prove a historical exit or current exposure.
+- Confirmed approach: pure receipt helper over the cockpit's existing order book/error/lastSuccess; refuse stale, missing, duplicate, cross-contract and contradictory rows. Missing day-book entries stay unknown. Local UI timer expires evidence without network calls.
+- Primary review caught outdated negative test labels (vacuous assertions) and pinned parent updates between local clock ticks: evaluate Date.now() at render time. Final combined checks: 29 React and 17 Node fixtures pass. Backend/protected code remains identical. Both images rebuilt; source parity and Chrome checks recorded in rollout-receipt-book.json.
+- Browser check observed a real old-FE/new-BE mismatch that cleared after reload. The broker was connected on this continuation; the inspected historical order was absent from its returned book and correctly labeled not in book. Earlier expired-session observations are historical, not current facts.
+- Dead ends: reusing a disappeared browser tab handle after a long interruption; treating a missing historical order as zero fills; treating cached timer time as current when a new parent snapshot arrives; adding fresh polling for data already owned by the provider.
+- Durable receipt storage still needs schema approval. Concrete additive proposal saved; no collection/index/data schema was changed.
+
+## 2026-10-25 — Approved durable receipt storage
+
+Core lesson: persistence is evidence of an observation, not proof that trading history is complete. Keep cumulative fills, execution chronology, approval identity and journal P&L as separate claims.
+
+Confirmed approaches: allowlist and revalidate before insert and read; deterministic event IDs exclude capture time so repeated snapshots preserve the first capture; exact order identity and explicit exit tags prevent same-symbol/re-entry guesses. Bound deferred DB capture so a failure cannot wait in the executor's protection path. Fake-store restart, failure, conflicting fill and exact route-hook tests plus AST comparison verify behavior without broker orders. Selected checks: 320 Python, 36 React, 17 Node.
+
+Dead ends: an explicit exit tag alone did not catch a fill quantity larger than the entry; add independent quantity boundaries. Unchecked set membership on a malformed structured status raised TypeError; require strings and drop unknown/raw text. Stale manual-order tests mocked the former route entry point and reached a real DB lookup; update the actual helper mock and install fail-fast DB/default-placement guards. The first broad test run failed; final checks pass. Do not repeat runtime verification against a stopped Docker daemon or call historical image/session evidence current. Do not claim best-effort queued captures survive an abrupt crash before acknowledgment.
+
+Remaining: running collection/index/API/Chrome checks when Docker is available; full exit-fill accounting and original unreproduced incidents. No live orders, authentication or protected-control changes were used for this work.
+
+Final offline artifact check: local frontend production build exited 0; the compiled bundle contains the current source fingerprint (`docs/proposal-progress/durable-local-build-verification.json`). Docker rollout remains pending.
+
+## 2026-10-25 — Durable receipt rollout resumed
+
+Core lesson: distinguish acknowledged storage behavior (isolated tests), deployed schema/API (running checks), and real fill capture (not exercised). An empty evidence ledger is an honest expected result when no qualifying new observations occur; do not manufacture records to make a rollout look verified.
+
+Confirmed approach: renewed operator flat-account confirmation plus fresh app-state checks; build both images with the same source fingerprint; recreate backend/frontend only; compare Mongo container/start identity and actual backend files; verify the unique index, read-only receipt API and the existing user browser tab. Both connection badges remain connected. Receipt historical sample stays unknown rather than inferring zero fills.
+
+Dead end avoided: the former Chrome tab was no longer present. Inventory showed the user now using Edge; use that existing tab and document the actual browser. A large inline PowerShell documentation command was rejected by command policy; separate bounded read checks from file edits, using apply_patch for Markdown, completed the same work. No need to alter authentication, enable execution, place orders or recreate missing historical evidence. Exact rollout evidence: `docs/proposal-progress/durable-rollout-verification.json`.
+
+## 2026-10-25 — Quick Trade audit; conditional extension stopped
+
+Core lesson: a recovered position is not a recovered protection contract. The actual recovery method replaced a locked 105 stop with 50 at premium 100 and removed the 120 target; the original state would exit, the recovered state did not. Preserve fill basis, original exits and ratchet durably before promising unattended recovery.
+
+Confirmed approaches: bounded read-only agents wrote field/broker/failure checkpoints; primary reviewed source and independently ran actual manual executor, router arm closure, guard tick path and exit builder behind MockNoren with task network blocked. Separate simulation, public metadata, source inspection and live acceptance evidence. New characterization tests pass while reproducing existing defects. Report: `docs/quick-trade-audit/REPORT.md`.
+
+Dead ends: blocking sockets before creating the Windows asyncio loop also blocks its internal wakeup socketpair; initialize the loop first, then prohibit task connections. MockNoren emits order events without updating order books; inject the independent book observation explicitly, snapshot submissions before mutable cleanup. A plain React command lacked the documented alias mapping; use the recorded moduleNameMapper. Never claim mocked LIVE_TEST is the application's paper mode: PAPER correctly blocks this executor and no paper Quick Trade adapter exists.
+
+Checkpoint: Part B stopped under the user's explicit Sev-1 clause. No application code or live trading state changed. Audit-only tests/logs added; 320 selected backend checks, 6 React checks, 9 manual characterizations and 4 recovery/outage characterizations passed in their recorded runs. Broker account acceptance and actual crash recovery remain not verified. Do not restart or re-authenticate the running trading system merely to continue this audit.
+
+## 2026-10-26 — Consumer complaint research and drafting (outside product work)
+
+Core lesson: distinguish a company's grievance escalation, NCH pre-litigation grievance registration, and a Consumer Commission case. Copying an authority on email is not evidence that a case was filed.
+
+Confirmed approaches: match identifiers against supplied screenshots; distinguish the user's chronology from screenshot evidence; verify contacts on official company terms, the developer's app listing, and government contact pages. Sources: https://www.meesho.com/legal/terms-conditions ; https://play.google.com/store/apps/details?id=com.meesho.supply ; https://consumerhelpline.gov.in/public/contact ; https://consumeraffairs.gov.in/pages/nch ; https://consumeraffairs.gov.in/pages/consumer-protection-unit .
+
+Workflow/checkpoint prompts: (a) Extract only visible facts and separately attribute the user's account; done when identifiers match. (b) Verify each proposed recipient and escalation route on an official source; done when each has a source. (c) Review the draft for unsupported allegations, invented amounts, and false claims of legal filing; done when each is removed or correctly attributed. Primary review completed; email remains a draft and no complaint was submitted. No personal order identifiers stored here.
+
+Dead ends to avoid: third-party contact directories with misspelled domains, unsupported executive addresses, presenting requested response deadlines as statutory deadlines, and equating closed support tickets with completed service. The Exa connector required an objective argument in addition to the query; the local skill's minimal example omitted it.
+
+## 2026-10-27 — NIFTY morning closing forecast (outcome pending)
+
+Checkpoint: `docs/market-research/2026-10-27-nifty-forecast.md`; raw snapshot, derived rows, reproducible script and dated official NSE files saved alongside it. Read-only broker/browser work; no trades or trading-state changes.
+
+Confirmed baseline: AlphaForge 22,760.50 at observation 10:42:56 IST; Emerge 22,764.30 at 10:42:41 (asynchronous). Exact completed 10:39 minute = 22,761.60 Upstox versus 22,760.50 Flattrade. Previous official NSE close on 26 October 22,753.20; today open/high/low = 22,708.80 / 22,804.50 / 22,653.20. All 16 completed October sessions matched the official calendar and dated closing targets.
+
+Locked judgment around 10:43 IST: point 22,750, official-close band 22,600–22,950. Neutral/slight fade of 10.50 points from decision quote. Model `judgment-v1-20261027`, evidence tier judgment-only with historical cross-check, no nominal coverage or forward-validation claim. Ten-session calibration (12–26 October), exact 10:40 cutoff: return-median benchmark 22,737.684622; empirical endpoints 22,608.804056–22,931.350005; discretionary point tilt +12.315378. Mixed expiry/non-expiry sample; original delivery latency unverified. CAS already included, no extra uplift.
+
+Flip/invalidation: recovered 22,685 support holds. First post-issuance completed 15-minute candle below 22,685 invalidates recovery-holding thesis; above 22,850 invalidates capped-upside premise. Opposing bullish continuation remains plausible. Actual close, point error, band result and first invalidation remain pending. App flagged an unguarded broker position; user alerted, separate broker protection unverified. This risk does not justify altering the forecast or placing an order.
+
+Core lesson: a chart recovery and positive breadth can coexist with an essentially flat closing estimate; do not force directional confidence when ten comparable time-to-close moves split evenly. Confirmed approaches: exact completed-bar anchors; dated official closes and holiday reconciliation; timestamped Reuters news; independent arithmetic review; retain no-change benchmark and score original call. The review's stronger evidence-tier suggestion was rejected because arithmetic checks are not a past-only evaluation.
+
+Dead ends: Python urllib public downloads timed out here; bounded PowerShell Invoke-WebRequest retrieved the same public NSE CSVs. The snapshot exporter requires an existing output directory. Avoid max-pain pinning claims, zero-volume VWAP, double-counted auction uplift, and treating a forecast as protection for a live option position.
+
+## 2026-10-27 — NIFTY option-chain/noon forecast update (outcome pending)
+
+Locked around 12:09 IST: point 22,775, official-close working band 22,675–22,975; latest observation 12:08:48 spot 22,760.85, expected move +14.15 points. Model `judgment-v2-20261027-noon`, judgment-only with historical cross-check; no coverage claim. Raw inputs and review: `docs/market-research/2026-10-27-nifty-noon-forecast.md` and adjacent noon JSON files. Original morning call preserved; no original invalidation in complete 15-minute bars through 12:00. Both outcomes remain pending.
+
+Confirmed: seven-strike partial PCR 1.1639501888, partial max pain 22,750, ATM straddle 98.00. Calls concentrate at 22,800 and puts at 22,700 within the observed band. Completed chart data shows rising pullback lows but capped highs. Exact 12:05-cutoff historical return baseline 22,810.253338 and empirical endpoints 22,699.541805–22,952.873523 from ten sessions dated 12–26 October. Discretionary point tilt -35.253338. CAS already included, no extra uplift. New invalidation: completed 15-minute close below 22,720 or above 22,805 after issuance.
+
+Core lesson: label PCR/max pain by their strike universe and freshness; a dashboard's market-wide-looking label may represent only seven strikes. Confirmed approach: independently recompute intrinsic payouts and PCR; inspect actual per-leg timestamps; verify original forecast invalidation; retain spot-as-close and historical benchmarks. Read-only reviewer approved arithmetic and rejected strong pinning/directional claims; primary incorporated those limits.
+
+Dead ends: Flattrade option-chain metadata returned blank OI/prices; individual quotes corroborated prices but not OI. Enlarging the local universe yielded stale/missing outer strikes, so no full-chain claim. Emerge browser was logged out while API quotes worked; no reauthentication attempted. Optional matplotlib unavailable; no package installation needed for the requested analysis. No broker, subscription or trading-state mutation.
+
 
 ## 2026-11-03 — Chart trading phase 1
 
@@ -1909,3 +2226,14 @@ See docs/chart-terminal/rollout-acceptance.md for the two-tab and restart checks
 - Core lesson: a fullscreen target must include all dependent dialogs. Putting only ChartTile in the browser top layer hides its sibling trading confirmation. Keep a viewport-sized tile inside the terminal, below the shared modal.
 - Confirmed approach: preserve mounted canvas nodes; check both tile geometry and canvas backing size after ResizeObserver/paint settle; verify Restore and Escape against the original layout/settings, and show a mocked confirmation without submitting it.
 - Dead ends: accepting host-element size alone (an immediate screenshot can still show the previous canvas size), assuming automated Chrome granted native fullscreen, and using a stale preserved release context. Verify the latest shipped fingerprint before assembling the frontend-only image.
+
+## Repository publication lesson - 2026-11-19
+
+- Core lesson: committing the whole project includes earlier independent work;
+  source publication and running deployment are separate claims.
+- Confirmed approach: scan current files and outgoing history for secrets, compare
+  candidates against local credential values without printing them, run selected
+  offline checks, and publish explicit failures alongside passed checks.
+- Dead ends: treating webpack aliases as Jest aliases, assuming backend/app is
+  importable without PYTHONPATH, and publishing a stale generated build manifest
+  as current provenance. Use an unknown starter and generate real build metadata.

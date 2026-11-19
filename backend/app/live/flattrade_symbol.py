@@ -90,17 +90,17 @@ LOT_SIZE_EXPECTED: Dict[str, int] = {u: spec[2] for u, spec in UNDERLYING_SPEC.i
 EXCHANGE_RULES: Dict[str, Dict[str, Any]] = {
     "NIFTY": {
         "exch": "NFO", "lot_size": 65, "freeze_qty": 3510, "tick": 0.05,
-        "products": ["NRML", "MIS"], "price_types": ["LIMIT", "MARKET", "SL-LMT"],
+        "products": ["NRML", "MIS"], "price_types": ["LIMIT", "SL-LMT"],
         "expiry_cadence": "weekly_tue",
     },
     "BANKNIFTY": {
         "exch": "NFO", "lot_size": 30, "freeze_qty": 1440, "tick": 0.05,
-        "products": ["NRML", "MIS"], "price_types": ["LIMIT", "MARKET", "SL-LMT"],
+        "products": ["NRML", "MIS"], "price_types": ["LIMIT", "SL-LMT"],
         "expiry_cadence": "monthly_last_tue",
     },
     "SENSEX": {
         "exch": "BFO", "lot_size": 20, "freeze_qty": 1000, "tick": 0.05,
-        "products": ["NRML", "MIS"], "price_types": ["LIMIT", "MARKET", "SL-LMT"],
+        "products": ["NRML", "MIS"], "price_types": ["LIMIT", "SL-LMT"],
         "expiry_cadence": "weekly_thu",
     },
 }

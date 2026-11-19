@@ -1,0 +1,9 @@
+{
+  "changed_router_functions": [
+    "live_broker_orders",
+    "live_broker_trades",
+    "live_order_approve"
+  ],
+  "router_behavior_after_removing_capture_calls": "identical_AST",
+  "all_other_router_functions": "identical_AST"
+}

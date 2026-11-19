@@ -1,0 +1,85 @@
+{
+  "checked_at": "2026-10-25T06:13:44.586984+00:00",
+  "health": {
+    "db": "ok"
+  },
+  "build": {
+    "schema": 1,
+    "scope": "alphaforge-source-v1",
+    "status": "known",
+    "source_sha256": "fbe29b83e58ad4a1bdd831858b3bd596581de0e0e09a5c4d4f5349513b5a870c",
+    "built_at": "2026-10-25T06:12:11.779174+00:00",
+    "git_revision": "ff9cbe3accb8b1e393a6bbfb6836e1bea3ea5d69",
+    "git_dirty": true,
+    "checkout_status": "unverified"
+  },
+  "receipt_api": {
+    "total": 21,
+    "shown": 21,
+    "capture_status": {
+      "state": "not_observed",
+      "failed_writes": 0,
+      "last_failure_at": null,
+      "pending_count": 0,
+      "scope": "current_process"
+    },
+    "evidence_states": [
+      "available"
+    ],
+    "events_shown": 0
+  },
+  "mode": "LIVE_OFFLINE",
+  "guard_count": 0,
+  "source_sha256": "fbe29b83e58ad4a1bdd831858b3bd596581de0e0e09a5c4d4f5349513b5a870c",
+  "served_bundle": "/static/js/main.1a4d4787.js",
+  "source_parity": {
+    "backend": true,
+    "frontend": true
+  },
+  "database": {
+    "receiptIndexes": [
+      {
+        "name": "_id_",
+        "key": {
+          "_id": 1
+        },
+        "unique": false
+      },
+      {
+        "name": "event_key_1",
+        "key": {
+          "event_key": 1
+        },
+        "unique": true
+      }
+    ],
+    "receiptCount": 0,
+    "liveDeployments": 0,
+    "openLive": 0,
+    "unsubmitted": 0
+  },
+  "alphaforge_backend": "9a2dabac63f215a502573786a1033b9272cc9c76e42f2905ec29e68c7225a0d9 2026-10-25T06:13:26.87679995Z sha256:e19eb3b799d9002fd94334457ca75cf0b9947f410dd53dfc2e905b10f1e8883d",
+  "alphaforge_frontend": "5de846f4e2af977ed9565c95a0e73fd53e865e046def7b44d241e7b2810137f9 2026-10-25T06:13:27.024497356Z sha256:0ad9b2fd93ce7c7e307a87e0f25de0828ab863de53d17d860306c038f043f50c",
+  "alphaforge_mongo": "eb10b0b16368fc752e98efef3c931211c332d233c3222840168c3168fe1c5fab 2026-10-25T06:09:33.139167984Z sha256:4b5bf3c2bb7516164f6dcb44acce4fdcb428abfe5771a1128304a0f34ab9ff7c",
+  "mongo_not_restarted": true,
+  "running_backend_file_parity": {
+    "app/live/receipt_events.py": true,
+    "app/live/receipt_capture.py": true,
+    "app/live/receipt_evidence.py": true,
+    "app/live/execution_receipts.py": true,
+    "app/live/idempotency.py": true,
+    "app/routers/live_broker.py": true,
+    "server.py": true
+  },
+  "browser_check": {
+    "browser": "Edge",
+    "user_tab": "http://localhost:3000/live-trading",
+    "build_sources_match": true,
+    "upstox_connected": true,
+    "flattrade_connected": true,
+    "trade_book_receipts_visible": true,
+    "historical_sample_persisted_events": 0,
+    "historical_approval_and_fills_unknown": true,
+    "no_order_or_deployment_actions": true
+  }
+}

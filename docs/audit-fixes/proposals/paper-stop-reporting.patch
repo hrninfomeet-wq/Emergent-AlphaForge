@@ -1,0 +1,35 @@
+--- a/backend/app/routers/deployments.py
++++ b/backend/app/routers/deployments.py
+@@ -1253,8 +1253,12 @@
+         db, latest_tick_lookup=upstox_stream_manager.latest_tick_map().get,
+         reason="manual_stop_all_paper",
+     )
++    closed = [s for s in summaries if "error" not in s and "skipped" not in s]
++    failed = [s for s in summaries if "error" in s]
++    skipped = [s for s in summaries if "skipped" in s]
+     return serialize_doc({
+-        "squared_off": summaries, "squared_off_count": len(summaries),
++        "squared_off": closed, "squared_off_count": len(closed),
++        "failed": failed, "skipped": skipped,
+         "paused_deployment_ids": paused_ids,
+     })
+ 
+--- a/frontend/src/pages/PaperTrading.jsx
++++ b/frontend/src/pages/PaperTrading.jsx
+@@ -498,7 +498,15 @@
+     const warn = offHours ? "\n\nMarket looks closed — open positions will close at an ESTIMATED price." : "";
+     if (!window.confirm(`Stop ALL paper trading? Closes paper positions and pauses paper/signal-only strategies. Live deployments are unaffected.${warn}`)) return;
+     setBusy(true);
+-    try { const r = await api.stopAllPaperDeployments(); toast.success(`Stopped all · squared off ${r.squared_off_count ?? 0} · paused ${r.paused_deployment_ids?.length ?? 0}`); await refreshAll(); }
++    try {
++      const r = await api.stopAllPaperDeployments();
++      const failed = r.failed?.length ?? 0;
++      const skipped = r.skipped?.length ?? 0;
++      const message = `Paper stop · closed ${r.squared_off_count ?? 0} · paused ${r.paused_deployment_ids?.length ?? 0}`;
++      if (failed || skipped) toast.warning(`${message} · failed ${failed} · skipped ${skipped}. Review the remaining paper positions.`);
++      else toast.success(message);
++      await refreshAll();
++    }
+     catch (e) { toast.error(e.response?.data?.detail || e.message); }
+     finally { setBusy(false); }
+   };

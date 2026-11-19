@@ -373,9 +373,9 @@ _ORDER_TYPE_TO_PRCTYP = {"LIMIT": "LMT", "MARKET": "MKT", "SL-LMT": "SL-LMT"}
 # Ticket product -> Noren prd code (MIS=intraday I, NRML=carryforward M).
 _PRODUCT_TO_PRD = {"MIS": "I", "NRML": "M"}
 # The choke-point's OWN prctyp allow-list. Distinct from broker_protocol.ALLOWED_PRCTYP
-# (the strict L1/L2 gate, which excludes MKT): the live-order-page deliberately supports
-# MARKET orders, so MKT is permitted here and carries prc=0 (validated below).
-_CHOKE_PRCTYP = ("LMT", "SL-LMT", "MKT")
+# and the strict L1/L2 gate both enforce Flattrade API v2's limit/SL-limit policy.
+# Keep this check even if an outdated exchange-rule table advertises MARKET.
+_CHOKE_PRCTYP = ("LMT", "SL-LMT")
 
 
 def _fail2(verdicts: List[Verdict], check: str, detail: str) -> Tuple[None, List[Verdict]]:

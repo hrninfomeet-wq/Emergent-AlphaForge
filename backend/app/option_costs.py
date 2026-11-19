@@ -28,6 +28,8 @@ Scope / honesty:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from numbers import Real
 from typing import Any, Dict, Optional
 
 
@@ -35,10 +37,40 @@ from typing import Any, Dict, Optional
 # All rates are fractions unless noted. Sourced from public broker charge lists;
 # operator-tunable via CostConfig.
 DEFAULT_BROKERAGE_PER_ORDER = 0.0        # Flattrade = 0; set 20 for Zerodha/Upstox-style
-# STT on options: 0.1% of SELL-side premium since 2024-10-01 (was 0.0625%).
+# STT on option sale premium: 0.10% through 2026-03-31; 0.15% from 2026-04-01.
+# NSE: https://www.nseindia.com/static/products-services/equity-derivatives-securities-transaction-tax
 # Saved presets/runs that serialized a full cost_config keep their stored rate
 # (reproducibility); only configs without an explicit stt_sell_rate get this.
-DEFAULT_STT_SELL_RATE = 0.001
+DEFAULT_STT_SELL_RATE = 0.0015
+STT_SELL_RATE_BEFORE_APRIL_2026 = 0.001
+STT_SELL_RATE_CHANGE_DATE = date(2026, 4, 1)
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def default_stt_sell_rate(exit_ts: Any = None) -> float:
+    """Resolve the option-sale schedule by IST sell date; absent date means now.
+
+    Numeric timestamps are epoch milliseconds, matching trade/candle exit_ts.
+    A date or naive ISO datetime is interpreted in IST; aware values convert to
+    IST. Malformed supplied dates raise rather than silently using today's rate.
+    """
+    if exit_ts is None:
+        sell_date = datetime.now(_IST).date()
+    elif isinstance(exit_ts, datetime):
+        sell_date = (exit_ts.replace(tzinfo=_IST) if exit_ts.tzinfo is None
+                     else exit_ts.astimezone(_IST)).date()
+    elif isinstance(exit_ts, date):
+        sell_date = exit_ts
+    elif isinstance(exit_ts, Real) and not isinstance(exit_ts, bool):
+        sell_date = datetime.fromtimestamp(float(exit_ts) / 1000, _IST).date()
+    elif isinstance(exit_ts, str):
+        return default_stt_sell_rate(datetime.fromisoformat(exit_ts.replace("Z", "+00:00")))
+    else:
+        raise ValueError(f"Unsupported option sell date: {exit_ts!r}")
+    return (DEFAULT_STT_SELL_RATE if sell_date >= STT_SELL_RATE_CHANGE_DATE
+            else STT_SELL_RATE_BEFORE_APRIL_2026)
+
+
 DEFAULT_EXCHANGE_TXN_RATE = 0.0003503   # == EXCHANGE_TXN_RATE_NFO below.
 # One NSE rate for paper, backtest AND live: a separate, marginally different
 # default here would silently make live charge differently from the paper run
@@ -60,7 +92,7 @@ DEFAULT_STAMP_BUY_RATE = 0.00003         # 0.003% on BUY-side premium turnover
 # RATES ARE STATUTORY AND CHANGE. Verify against current circulars before relying
 # on these for anything beyond estimation:
 #   NSE circular CML/2024/57 and BSE notice 20240930-1 (exchange txn charges,
-#   effective 2024-10-01); Finance Act 2024 (STT, options sell-side);
+#   effective 2024-10-01); Finance Acts 2024/2026 (STT, options sell-side);
 #   SEBI/HO/MRD/MRD-PoD-1/P/CIR/2022/0044 (SEBI fee); Stamp Act 2019 (stamp duty,
 #   buy-side). Flattrade charges ZERO F&O brokerage, hence the 0.0 default above.
 EXCHANGE_TXN_RATE_NFO = DEFAULT_EXCHANGE_TXN_RATE   # NSE F&O (~0.03503%)
@@ -84,9 +116,10 @@ def cost_config_for_exchange(exch: Optional[str]) -> "CostConfig":
 
 @dataclass
 class CostConfig:
-    """Configurable rupee cost schedule for one option round trip."""
+    """Rupee schedule; null STT follows sell date, numeric STT pins the rate."""
     brokerage_per_order: float = DEFAULT_BROKERAGE_PER_ORDER   # charged per leg (buy, sell)
-    stt_sell_rate: float = DEFAULT_STT_SELL_RATE
+    # None = statutory schedule at the sell date; a number pins a saved schedule.
+    stt_sell_rate: Optional[float] = None
     exchange_txn_rate: float = DEFAULT_EXCHANGE_TXN_RATE
     sebi_rate: float = DEFAULT_SEBI_RATE
     gst_rate: float = DEFAULT_GST_RATE
@@ -149,19 +182,23 @@ def round_trip_charges(
     exit_premium: float,
     quantity: int,
     cfg: CostConfig,
+    exit_ts: Any = None,
 ) -> Dict[str, Any]:
     """Compute total statutory + brokerage charges (₹) for one buy->sell round trip.
 
     quantity = lot_size * lots (total contracts). Premiums are per-unit option
     prices. Returns a breakdown plus the total. Does NOT include the bid-ask
     spread (that is applied to the fill price separately via spread_pts_for_premium).
+    Automatic STT uses exit_ts (epoch ms/date/ISO) in IST, or today if omitted.
     """
     qty = max(0, int(quantity))
     buy_turnover = max(0.0, float(entry_premium)) * qty
     sell_turnover = max(0.0, float(exit_premium)) * qty
 
     brokerage = cfg.brokerage_per_order * 2  # two legs
-    stt = sell_turnover * cfg.stt_sell_rate
+    stt_rate = (default_stt_sell_rate(exit_ts) if cfg.stt_sell_rate is None
+                else cfg.stt_sell_rate)
+    stt = sell_turnover * stt_rate
     exchange = (buy_turnover + sell_turnover) * cfg.exchange_txn_rate
     sebi = (buy_turnover + sell_turnover) * cfg.sebi_rate
     stamp = buy_turnover * cfg.stamp_buy_rate

@@ -1,0 +1,102 @@
+{
+  "instrument": "NIFTY",
+  "as_of": "2026-10-27T12:05:53+05:30",
+  "spot": 22765.15,
+  "structure": {
+    "label": "UPTREND",
+    "kind": "range",
+    "regime_bucket": 3,
+    "buckets": 5,
+    "confidence": 0.4,
+    "why": "direction=up · ADX=18.6 · net 0.34%"
+  },
+  "trend": {
+    "intraday": "up",
+    "daily": "down",
+    "weekly": "flat",
+    "monthly": "down"
+  },
+  "levels": {
+    "spot": 22768.35,
+    "pivot": 22767.77,
+    "supports": [
+      22767.49,
+      22759.55,
+      22752.67
+    ],
+    "resistances": [
+      22775.05,
+      22780.67
+    ],
+    "nearest_wall": {
+      "side": "S",
+      "price": 22767.49
+    },
+    "position_in_range": 0.114
+  },
+  "options": {
+    "pcr_oi": 1.1401303643908596,
+    "max_pain": 22750.0,
+    "iv_rank_30d": 0.075,
+    "iv_rank_source": "vix_proxy",
+    "atm_straddle": 97.55,
+    "implied_move_pct": 0.43,
+    "net_delta_rupee": null,
+    "net_theta_rupee": null,
+    "expiry": "2026-10-27",
+    "chain": [
+      {
+        "strike": 22600.0,
+        "ce_ltp": 173.3,
+        "ce_oi": 4373915.0,
+        "pe_ltp": 8.35,
+        "pe_oi": 23063885.0
+      },
+      {
+        "strike": 22650.0,
+        "ce_ltp": 128.3,
+        "ce_oi": 3263650.0,
+        "pe_ltp": 13.85,
+        "pe_oi": 16817320.0
+      },
+      {
+        "strike": 22700.0,
+        "ce_ltp": 89.15,
+        "ce_oi": 12962885.0,
+        "pe_ltp": 24.3,
+        "pe_oi": 32473155.0
+      },
+      {
+        "strike": 22750.0,
+        "ce_ltp": 56.75,
+        "ce_oi": 16810040.0,
+        "pe_ltp": 40.8,
+        "pe_oi": 21246940.0
+      },
+      {
+        "strike": 22800.0,
+        "ce_ltp": 33.2,
+        "ce_oi": 28124135.0,
+        "pe_ltp": 68.6,
+        "pe_oi": 13817310.0
+      },
+      {
+        "strike": 22850.0,
+        "ce_ltp": 18.95,
+        "ce_oi": 14815645.0,
+        "pe_ltp": 103.35,
+        "pe_oi": 3093285.0
+      },
+      {
+        "strike": 22900.0,
+        "ce_ltp": 10.45,
+        "ce_oi": 19818955.0,
+        "pe_ltp": 145.75,
+        "pe_oi": 3694080.0
+      }
+    ]
+  },
+  "warnings": [
+    "iv_history_thin"
+  ]
+}

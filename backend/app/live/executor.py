@@ -284,6 +284,7 @@ async def place_live_test_order(
     uid: str = "",
     actid: str = "",
     guard_armed: bool = True,
+    approved_entry: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Place exactly one real entry order through all safety gates.
 
@@ -387,6 +388,14 @@ async def place_live_test_order(
     )
 
     # ------------------------------------------------------------------
+    # Approval binds execution fields, not just inputs: a changed scrip lot,
+    # symbol or tick price requires a new preview, before any submission/claim.
+    if approved_entry is not None:
+        from app.live.manual_ticket import same_approved_entry
+        if intent is None or not same_approved_entry(
+                approved_entry, intent.to_jdata(uid="", actid="")):
+            return _blocked("approved_order_changed: preview and approve again", verdicts)
+
     # Gate 3 (margin) — use the broker-resolved lot size, not a stale constant.
     # Only append the margin verdict when resolution succeeded (resolved_lot_size
     # is not None); if resolution failed the symbol verdict already blocked.

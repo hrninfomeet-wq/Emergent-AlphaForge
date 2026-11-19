@@ -177,6 +177,7 @@ def close_economics(
             exit_premium=float(raw_exit_premium),
             quantity=qty,
             cfg=CostConfig(enabled=True),
+            exit_ts=ts_ms,
         ) if qty > 0 else None
         total_charges = float(charges["total_charges"]) if charges else 0.0
         return {
@@ -216,6 +217,7 @@ def close_economics(
         exit_premium=exit_fill,
         quantity=qty,
         cfg=friction.costs,
+        exit_ts=ts_ms,
     ) if qty > 0 else None
     total_charges = float(charges["total_charges"]) if charges else 0.0
     # DEDUCTION still follows the operator's toggle: reporting a charge is not the

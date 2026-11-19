@@ -153,32 +153,25 @@ class TestExchangeRules:
 
 
 # ---------------------------------------------------------------------------
-# MARKET orders — prctyp MKT, prc=0, finite/band skipped but fat_finger/jdata run
+# MARKET orders — forbidden by Flattrade API v2, including previews
 # ---------------------------------------------------------------------------
 class TestMarketOrders:
-    def test_market_prctyp_and_zero_price(self):
+    def test_market_is_refused(self):
         children, verdicts = validate_and_build(_ticket(order_type="MARKET"))
-        assert children is not None
-        c = children[0]
-        assert c.prctyp == "MKT"
-        assert c.prc == 0.0
-        assert c.qty == 65
-        assert _all_ok(verdicts)
+        assert children is None
+        assert _verdict(verdicts, "exchange_order_type")["ok"] is False
 
-    def test_market_skips_band_but_runs_fat_finger(self):
-        # lots over the cap must still fail on a MARKET order
+    def test_market_is_refused_before_sizing(self):
         children, verdicts = validate_and_build(
             _ticket(order_type="MARKET", lots=999, fat_finger_cap=10)
         )
         assert children is None
-        assert _verdict(verdicts, "fat_finger")["ok"] is False
+        assert _verdict(verdicts, "exchange_order_type")["ok"] is False
 
-    def test_market_with_no_ref_ltp_still_builds(self):
-        # MARKET needs no reference price
+    def test_market_with_no_ref_ltp_is_refused(self):
         children, verdicts = validate_and_build(_ticket(order_type="MARKET", ref_ltp=None))
-        assert children is not None
-        assert children[0].prc == 0.0
-        assert _all_ok(verdicts)
+        assert children is None
+        assert _verdict(verdicts, "exchange_order_type")["ok"] is False
 
 
 # ---------------------------------------------------------------------------

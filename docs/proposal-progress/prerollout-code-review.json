@@ -1,0 +1,16 @@
+{
+  "existing_router_functions_changed": [],
+  "router_functions_added": [
+    "live_execution_receipts"
+  ],
+  "protected_and_runtime_parity": {
+    "app/live/kill_switch.py": true,
+    "app/live/live_position_guard.py": true,
+    "app/runtime.py": true,
+    "app/routers/deployments.py": true
+  },
+  "previous_images": {
+    "backend": "sha256:4677a582afbfb7025170341357462d72c0a82571f1ea449eb9447ac49d12988c",
+    "frontend": "sha256:16030a060d939bde3e10682baa919dc31efa317d90ab93e49047723217f875c0"
+  }
+}

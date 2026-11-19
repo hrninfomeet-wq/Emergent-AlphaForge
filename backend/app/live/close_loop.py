@@ -58,7 +58,8 @@ def _finite(v: Any) -> Optional[float]:
 
 def realized_fields(doc: Dict[str, Any], exit_px: float, *,
                     entry_px: Optional[float] = None,
-                    quantity: Optional[float] = None) -> Dict[str, Any]:
+                    quantity: Optional[float] = None,
+                    exit_ts: Any = None) -> Dict[str, Any]:
     """The journal fields a close writes for an exit at ``exit_px``.
 
     THE one realized-P&L computation for ``live_trades``. Every path that puts a
@@ -123,7 +124,8 @@ def realized_fields(doc: Dict[str, Any], exit_px: float, *,
             _ch = round_trip_charges(
                 entry_premium=float(entry_px), exit_premium=float(exit_px),
                 quantity=int(qty),
-                cfg=cost_config_for_exchange(doc.get("exch")))
+                cfg=cost_config_for_exchange(doc.get("exch")),
+                exit_ts=exit_ts if exit_ts is not None else doc.get("closed_at"))
             _total = round(float(_ch["total_charges"]), 2)
             fields["total_charges"] = _total
             fields["charges"] = _ch
@@ -182,7 +184,7 @@ async def close_live_trade(
     ep = fp if fp is not None else _finite(exit_price)
     if ep is not None:
         set_fields.update(realized_fields(doc, ep, entry_px=entry_px,
-                                          quantity=quantity))
+                                          quantity=quantity, exit_ts=now_iso))
     if extra_fields:
         set_fields.update(extra_fields)
     res = await db.live_trades.update_one(flt, {"$set": set_fields})

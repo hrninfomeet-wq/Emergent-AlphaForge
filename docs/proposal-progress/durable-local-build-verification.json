@@ -1,0 +1,8 @@
+{
+  "source_sha256": "fbe29b83e58ad4a1bdd831858b3bd596581de0e0e09a5c4d4f5349513b5a870c",
+  "manifest_matches_source": true,
+  "bundle_contains_manifest": true,
+  "bundle": "/static/js/main.8ed1eed7.js",
+  "local_build_only": true,
+  "docker_rollout": "pending_daemon_unavailable"
+}

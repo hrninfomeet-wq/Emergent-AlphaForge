@@ -2685,7 +2685,11 @@ async def _auto_follow_option_stream(min_radius: int = 0) -> Dict[str, Any]:
         # Idempotent: skip the (disruptive) restart when every desired option key
         # is already subscribed. As the ATM band drifts intraday, missing keys
         # trigger a re-center restart automatically.
-        current_keys = set(upstox_stream_manager.status().get("instrument_keys") or [])
+        stream_status = upstox_stream_manager.status()
+        # A temporary chart lease cannot satisfy a deployment's subscription
+        # ownership: closing that chart must not remove its execution feed.
+        current_keys = set(stream_status.get("execution_instrument_keys",
+                                             stream_status.get("instrument_keys")) or [])
         if set(option_keys).issubset(current_keys):
             return {"restarted": False, "reason": "already_covered", "radius": radius, "option_keys": len(option_keys)}
         stream_keys = list(dict.fromkeys([*_default_stream_instrument_keys(), *option_keys]))

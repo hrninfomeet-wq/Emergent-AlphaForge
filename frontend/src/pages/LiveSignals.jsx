@@ -24,6 +24,10 @@ import {
 } from "@/lib/strategyParams";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  executionFormPatch, executionFrictionPayload, executionLevelsPayload,
+  executionSizingSummary, executionWindowPayload, loadBacktestSource,
+} from "@/lib/backtestDeploySource";
 
 /**
  * Deployments command center (route /live, rebuilt 2026-06-12).
@@ -125,31 +129,16 @@ export default function LiveSignals() {
     setWizardOpen(true);
   }, [searchParams, presets]);
 
-  // Deep-link /live?backtest=RUN_ID (Backtest Lab's Deploy button). Same
-  // once-per-load discipline as ?preset=. Fetch the exact run when it is older
-  // than the bounded picker list so every saved backtest remains promotable.
+  // Open immediately for any saved ID, including one outside the bounded list.
+  // The wizard owns the cancellable detail read; fetching here as well races
+  // the list refresh and can cancel the only request after setting this latch.
   useEffect(() => {
     const runId = searchParams.get("backtest");
     if (!runId || deepLinkRef.current) return;
-    const listed = backtestRuns.find((r) => r.id === runId);
-    if (listed) {
-      deepLinkRef.current = true;
-      setWizardBacktestRun(runId);
-      setWizardOpen(true);
-      return;
-    }
     deepLinkRef.current = true;
-    let cancelled = false;
-    api.getBacktestRun(runId).then((run) => {
-      if (cancelled) return;
-      setBacktestRuns((prev) => prev.some((r) => r.id === runId) ? prev : [run, ...prev]);
-      setWizardBacktestRun(runId);
-      setWizardOpen(true);
-    }).catch((e) => {
-      if (!cancelled) toast.error(`Backtest run unavailable: ${getApiErrorMessage(e)}`);
-    });
-    return () => { cancelled = true; };
-  }, [searchParams, backtestRuns]);
+    setWizardBacktestRun(runId);
+    setWizardOpen(true);
+  }, [searchParams]);
 
   const act = async (fn, okMsg) => {
     setBusy(true);
@@ -491,7 +480,22 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
   const [quality, setQuality] = useState(null);
   const [preflight, setPreflight] = useState(null);
   const [preflightBusy, setPreflightBusy] = useState(false);
-  const set = (k, v) => setForm((prev) => ({ ...prev, [k]: v }));
+  const [runSource, setRunSource] = useState(null);
+  const [sourceReload, setSourceReload] = useState(0);
+  const set = (k, v) => setForm((prev) => ({ ...prev, [k]: v,
+    ...(k === "auto_paper_unit" ? { auto_paper_target_unit: v, auto_paper_stop_unit: v } : {}),
+  }));
+
+  // The journal list deliberately omits execution. Always fetch the selected
+  // run, including when its summary is already in the picker. Cleanup prevents
+  // a slow response (or failure) for the previous choice from replacing it.
+  useEffect(() => {
+    if (form.source_type !== "backtest_run" || !form.source_id) {
+      setRunSource(null);
+      return undefined;
+    }
+    return loadBacktestSource(form.source_id, api.getBacktestRun, setRunSource);
+  }, [form.source_type, form.source_id, sourceReload]);
 
   const preset = form.source_type === "preset"
     ? presets.find((p) => p.name === form.source_id)
@@ -499,7 +503,10 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
   const backtestRun = form.source_type === "backtest_run"
     ? backtestRuns.find((r) => r.id === form.source_id)
     : null;
-  const selectedSourceConfig = preset?.config || backtestRun?.config;
+  const sourceKey = `${form.source_type}:${form.source_id}`;
+  const runSourceReady = runSource?.id === form.source_id && runSource?.status === "ready";
+  const selectedSourceConfig = preset?.config
+    || (form.source_type === "backtest_run" && runSourceReady ? runSource.config : null);
   const libraryStrategy = form.source_type === "strategy"
     ? strategies.find((s) => s.id === form.source_id)
     : null;
@@ -507,11 +514,9 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
     ? form.source_instrument
     : selectedSourceConfig?.instrument || backtestRun?.instrument || "").toUpperCase();
   const execSizing = selectedSourceConfig?.execution?.sizing_config;
-  const sizingSummary = execSizing?.enabled
-    ? `premium-at-risk · ${execSizing.risk_per_trade_pct ?? 1}% · ₹${fmtNum(execSizing.capital ?? 200000, 0)} · max ${execSizing.max_lots ?? 10}`
-    : execSizing
-      ? `fixed ${selectedSourceConfig?.execution?.lots || form.default_lots} lot(s)`
-      : `fixed ${form.default_lots} lot(s)`;
+  const sizingSummary = executionSizingSummary(selectedSourceConfig?.execution, form.default_lots);
+  const targetUnit = form.auto_paper_target_unit || form.auto_paper_unit;
+  const stopUnit = form.auto_paper_stop_unit || form.auto_paper_unit;
 
   // Data-realism preflight for the chosen preset's instrument (informational,
   // never blocks). Re-runs when the instrument changes.
@@ -581,47 +586,21 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
   const prefillRef = useRef(null);
   useEffect(() => {
     if (form.source_type === "strategy" || !form.source_id
-        || prefillRef.current === `${form.source_type}:${form.source_id}`) return;
+        || !selectedSourceConfig
+        || (prefillRef.current?.key === sourceKey && (form.source_type !== "backtest_run"
+          || prefillRef.current?.config === selectedSourceConfig))) return;
     const ex = selectedSourceConfig?.execution;
-    prefillRef.current = `${form.source_type}:${form.source_id}`;
-    setForm((prev) => ({
+    prefillRef.current = { key: sourceKey, config: selectedSourceConfig };
+    setForm((prev) => `${prev.source_type}:${prev.source_id}` !== sourceKey ? prev : ({
       ...prev,
+      ...executionFormPatch(ex),
+      execution_source_key: sourceKey,
       name: prev.name || `${form.source_id} deployment`,
-      ...(ex ? {
-        option_moneyness: ex.moneyness || prev.option_moneyness,
-        dte_filter: Array.isArray(ex.dte_filter) ? ex.dte_filter : prev.dte_filter,
-        default_lots: ex.lots || prev.default_lots,
-        ...(ex.exit_mode === "option_levels" ? {
-          auto_paper_unit: (ex.option_target_pts != null || ex.option_stop_pts != null) ? "pts" : "pct",
-          auto_paper_target_pts: ex.option_target_pts ?? "",
-          auto_paper_stop_pts: ex.option_stop_pts ?? "",
-          auto_paper_target_pct: ex.option_target_pct ?? "",
-          auto_paper_stop_pct: ex.option_stop_pct ?? "",
-        } : {}),
-        // Mirror the backtest's cost model so live fills are charged the same.
-        // Slippage is always-on with defaults in the backtest, so we leave the
-        // slippage knobs at their defaults; only the cost_config is preset-driven.
-        friction_costs_enabled: Boolean(ex.cost_config?.enabled),
-        friction_brokerage: ex.cost_config?.brokerage_per_order ?? prev.friction_brokerage,
-        friction_spread_pct: ex.cost_config?.spread_pct_of_premium ?? prev.friction_spread_pct,
-        // Exit / risk controls: carry the survival-validated overlay from the
-        // preset so a deployment built from a validated preset retains it.
-        // Values are fractions (pct) or absolute pts — no conversion needed.
-        exit_controls_enabled: Boolean(ex.exit_controls?.enabled),
-        exit_controls_unit: ex.exit_controls?.unit || prev.exit_controls_unit,
-        breakeven_trigger: ex.exit_controls?.breakeven?.trigger ?? "",
-        breakeven_lock: ex.exit_controls?.breakeven?.lock ?? "",
-        trailing_activation: ex.exit_controls?.trailing?.activation ?? "",
-        trailing_distance: ex.exit_controls?.trailing?.distance ?? "",
-        daily_cap_loss: ex.daily_caps?.loss ?? "",
-        daily_cap_target: ex.daily_caps?.target ?? "",
-        daily_cap_max_trades: ex.daily_caps?.max_trades ?? "",
-      } : {}),
     }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.source_id, form.source_type, preset, backtestRun, selectedSourceConfig]);
+  }, [form.source_id, form.source_type, sourceKey, selectedSourceConfig]);
 
   const create = async () => {
+    if (!canNext1) return;
     setBusy(true);
     try {
       const payload = {
@@ -635,13 +614,13 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
         confirmation_mode: "1m_close",
         option_moneyness: [form.option_moneyness],
         pretrade_profile: form.pretrade_profile,
-        dte_filter: form.dte_filter.length ? form.dte_filter : DTE_VALUES,
+        // Empty is genuinely unbounded in the evaluator. Replacing it with
+        // 0..6 changes a source that includes longer-dated contracts.
+        dte_filter: form.source_type === "backtest_run" ? form.dte_filter
+          : (form.dte_filter.length ? form.dte_filter : DTE_VALUES),
         default_lots: Math.max(1, parseInt(form.default_lots, 10) || 1),
         auto_paper: form.mode === "paper" ? Boolean(form.auto_paper) : false,
-        auto_paper_target_pts: form.auto_paper_unit === "pts" && form.auto_paper_target_pts !== "" ? Number(form.auto_paper_target_pts) : null,
-        auto_paper_stop_pts: form.auto_paper_unit === "pts" && form.auto_paper_stop_pts !== "" ? Number(form.auto_paper_stop_pts) : null,
-        auto_paper_target_pct: form.auto_paper_unit === "pct" && form.auto_paper_target_pct !== "" ? Number(form.auto_paper_target_pct) : null,
-        auto_paper_stop_pct: form.auto_paper_unit === "pct" && form.auto_paper_stop_pct !== "" ? Number(form.auto_paper_stop_pct) : null,
+        ...executionLevelsPayload(form),
         allow_overnight: Boolean(form.allow_overnight),
         max_consecutive_losses: form.max_consecutive_losses === "" ? null : Math.max(0, parseInt(form.max_consecutive_losses, 10) || 0),
         daily_loss_cutoff_pct: form.daily_loss_cutoff_pct === "" ? null : Number(form.daily_loss_cutoff_pct),
@@ -650,29 +629,14 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
         lots_override: form.mode === "paper" && form.lots_override !== "" ? Math.max(1, parseInt(form.lots_override, 10) || 1) : null,
         capital_amount: form.mode === "paper" && form.capital_amount !== "" ? Number(form.capital_amount) : null,
         capital_basis: form.mode === "paper" && form.capital_amount !== "" ? form.capital_basis : null,
-        // Live execution realism: only meaningful for paper mode. Slippage maps
-        // ATM / OTM1=ITM1 / OTM2+=ITM2+ to the backtest's buckets; costs mirror
-        // the preset's backtest cost model. Backend normalizes to FrictionConfig.
-        friction: form.mode === "paper" ? {
-          enabled: Boolean(form.friction_enabled),
-          slippage: {
-            atm_pts: Number(form.friction_slip_atm) || 0,
-            otm1_pts: Number(form.friction_slip_otm1) || 0,
-            itm1_pts: Number(form.friction_slip_otm1) || 0,
-            otm2_plus_pts: Number(form.friction_slip_otm2) || 0,
-            itm2_plus_pts: Number(form.friction_slip_otm2) || 0,
-          },
-          costs: {
-            enabled: Boolean(form.friction_costs_enabled),
-            brokerage_per_order: Number(form.friction_brokerage) || 0,
-            spread_pct_of_premium: Number(form.friction_spread_pct) || 0,
-          },
-        } : null,
+        // Paper fill policy retains the resolved rates, five slippage buckets
+        // and expiry-tail settings. Backend normalizes it to FrictionConfig.
+        friction: form.mode === "paper" ? executionFrictionPayload(form) : null,
         // Exit / risk controls. ALWAYS an object: `{}` is the explicit
         // "nothing configured" the schema expects. This previously sent `null`,
         // which Pydantic rejected with "risk: Input should be a valid
         // dictionary" — making the OPTIONAL panel effectively mandatory.
-        risk: buildRiskPayload(form),
+        risk: { ...buildRiskPayload(form), ...executionWindowPayload(form) },
         acknowledged_warnings: Boolean(form.acknowledged_warnings),
       };
       const res = await api.createDeployment(payload);
@@ -706,6 +670,8 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
       );
   const canNext1 = Boolean(form.source_id)
     && (form.source_type !== "strategy" || Boolean(form.source_instrument && form.source_timeframe))
+    && (form.source_type !== "backtest_run" || runSourceReady)
+    && (form.source_type === "strategy" || form.execution_source_key === sourceKey)
     && libraryParamsValid;
   const deployBlocked = deployBlockers(form, quality, { sourceReady: canNext1 });
   const canCreate = deployBlocked.length === 0;
@@ -762,6 +728,9 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                     data-testid="wizard-backtest-select"
                   >
                     <option value="">— choose a backtest run —</option>
+                    {form.source_id && !backtestRun && (
+                      <option value={form.source_id}>{runSourceReady ? runSource.config.name || form.source_id : form.source_id}</option>
+                    )}
                     {backtestRuns.map((r) => (
                       <option key={r.id} value={r.id}>
                         {r.name || r.id?.slice(0, 8)} ({r.strategy_id} · {r.instrument})
@@ -872,11 +841,21 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                   placeholder={form.source_id ? `${form.source_id} deployment` : "name shown on the card"}
                   className="mt-1 bg-bg-2 border-line h-8" />
               </label>
+              {form.source_type === "backtest_run" && form.source_id && !runSourceReady && (
+                <div className="text-[11px] text-warning" data-testid="wizard-source-detail-status">
+                  {runSource?.id === form.source_id && runSource?.status === "error" ? (
+                    <>
+                      Could not load this run's execution policy: {runSource.error}
+                      <button type="button" className="ml-2 underline" onClick={() => setSourceReload(n => n + 1)}>Retry</button>
+                    </>
+                  ) : "Loading this run's complete execution policy…"}
+                </div>
+              )}
               {readinessBusy && <div className="text-dimmer text-[11px]">Checking validation evidence…</div>}
               {readiness && <ReadinessSummary readiness={readiness} />}
               {preflightBusy && <div className="text-dimmer text-[11px]">Checking data realism…</div>}
               {preflight && <PreflightSummary preflight={preflight} />}
-              {form.source_type !== "strategy" && form.source_id && selectedSourceConfig?.execution == null && (
+              {form.source_type !== "strategy" && selectedSourceConfig && selectedSourceConfig.execution == null && (
                 <div className="text-[10px] text-dimmer">
                   This preset carries no execution policy (older preset or spot-only run) — review step 2 manually.
                 </div>
@@ -921,6 +900,11 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                   (or deploy from the backtest run) to inherit premium-at-risk sizing.
                 </div>
               )}
+              {(form.trade_window_start || form.trade_window_end) && (
+                <div className="text-[11px] text-dim" data-testid="wizard-source-entry-window">
+                  Saved entry window: {form.trade_window_start || "09:25"}–{form.trade_window_end || "14:50"} IST.
+                </div>
+              )}
 
               <div>
                 <div className="text-[11px] text-dim mb-1">DTE filter (days to expiry — none selected = all)</div>
@@ -929,7 +913,7 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                     className={`px-2 py-1 rounded text-[11px] font-mono border ${form.dte_filter.length === 0 ? "bg-info text-bg-0 border-info" : "bg-bg-2 text-dim border-line hover:text-foreground"}`}>
                     ALL
                   </button>
-                  {DTE_VALUES.map((d) => {
+                  {[...new Set([...DTE_VALUES, ...form.dte_filter])].sort((a, b) => a - b).map((d) => {
                     const sel = form.dte_filter.includes(d);
                     return (
                       <button key={d} type="button"
@@ -969,17 +953,17 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         <label className="text-[11px] text-dim">
-                          Target {form.auto_paper_unit === "pts" ? "(pts of premium)" : "(% of premium)"}
-                          <Input type="number" min="0" step={form.auto_paper_unit === "pts" ? "0.5" : "5"}
-                            value={form.auto_paper_unit === "pts" ? form.auto_paper_target_pts : form.auto_paper_target_pct}
-                            onChange={(e) => set(form.auto_paper_unit === "pts" ? "auto_paper_target_pts" : "auto_paper_target_pct", e.target.value)}
+                          Target {targetUnit === "pts" ? "(pts of premium)" : "(% of premium)"}
+                          <Input type="number" min="0" step={targetUnit === "pts" ? "0.5" : "5"}
+                            value={targetUnit === "pts" ? form.auto_paper_target_pts : form.auto_paper_target_pct}
+                            onChange={(e) => set(targetUnit === "pts" ? "auto_paper_target_pts" : "auto_paper_target_pct", e.target.value)}
                             className="mt-1 bg-bg-2 border-line h-8" placeholder="strategy hint" />
                         </label>
                         <label className="text-[11px] text-dim">
-                          Stop {form.auto_paper_unit === "pts" ? "(pts of premium)" : "(% of premium)"}
-                          <Input type="number" min="0" step={form.auto_paper_unit === "pts" ? "0.5" : "5"}
-                            value={form.auto_paper_unit === "pts" ? form.auto_paper_stop_pts : form.auto_paper_stop_pct}
-                            onChange={(e) => set(form.auto_paper_unit === "pts" ? "auto_paper_stop_pts" : "auto_paper_stop_pct", e.target.value)}
+                          Stop {stopUnit === "pts" ? "(pts of premium)" : "(% of premium)"}
+                          <Input type="number" min="0" step={stopUnit === "pts" ? "0.5" : "5"}
+                            value={stopUnit === "pts" ? form.auto_paper_stop_pts : form.auto_paper_stop_pct}
+                            onChange={(e) => set(stopUnit === "pts" ? "auto_paper_stop_pts" : "auto_paper_stop_pct", e.target.value)}
                             className="mt-1 bg-bg-2 border-line h-8" placeholder="strategy hint" />
                         </label>
                       </div>
@@ -1046,13 +1030,21 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                           <Input type="number" min="0" step="0.5" value={form.friction_slip_atm}
                             onChange={(e) => set("friction_slip_atm", e.target.value)} className="mt-1 bg-bg-2 border-line h-8" />
                         </label>
-                        <label className="text-[11px] text-dim">OTM1/ITM1 (pts)
+                        <label className="text-[11px] text-dim">OTM1 (pts)
                           <Input type="number" min="0" step="0.5" value={form.friction_slip_otm1}
                             onChange={(e) => set("friction_slip_otm1", e.target.value)} className="mt-1 bg-bg-2 border-line h-8" />
                         </label>
-                        <label className="text-[11px] text-dim">OTM2+/ITM2+ (pts)
+                        <label className="text-[11px] text-dim">OTM2+ (pts)
                           <Input type="number" min="0" step="0.5" value={form.friction_slip_otm2}
                             onChange={(e) => set("friction_slip_otm2", e.target.value)} className="mt-1 bg-bg-2 border-line h-8" />
+                        </label>
+                        <label className="text-[11px] text-dim">ITM1 (pts)
+                          <Input type="number" min="0" step="0.5" value={form.friction_slip_itm1 ?? form.friction_slip_otm1}
+                            onChange={(e) => set("friction_slip_itm1", e.target.value)} className="mt-1 bg-bg-2 border-line h-8" />
+                        </label>
+                        <label className="text-[11px] text-dim">ITM2+ (pts)
+                          <Input type="number" min="0" step="0.5" value={form.friction_slip_itm2 ?? form.friction_slip_otm2}
+                            onChange={(e) => set("friction_slip_itm2", e.target.value)} className="mt-1 bg-bg-2 border-line h-8" />
                         </label>
                       </div>
                       <label className="text-[11px] text-dim flex items-center gap-2">
@@ -1071,11 +1063,15 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                             <Input type="number" min="0" step="0.5" value={form.friction_spread_pct}
                               onChange={(e) => set("friction_spread_pct", e.target.value)} className="mt-1 bg-bg-2 border-line h-8" />
                           </label>
+                          <label className="text-[11px] text-dim">Minimum spread (premium pts)
+                            <Input type="number" min="0" step="0.05" value={form.friction_spread_min_pts ?? 0}
+                              onChange={(e) => set("friction_spread_min_pts", e.target.value)} className="mt-1 bg-bg-2 border-line h-8" />
+                          </label>
                         </div>
                       )}
                       <div className="text-[10px] text-dimmer leading-snug">
-                        Prefilled from this preset's backtest policy. The same costs apply to entry &amp; exit fills, and the
-                        paper journal records gross vs net so you can see the drag. Set the knobs to 0 to keep fills gross.
+                        Prefilled from the saved source's execution policy. Stored statutory rates and expiry-tail settings are retained.
+                        The paper journal records gross and net results so you can see the drag.
                       </div>
                     </>
                   ) : (
@@ -1326,7 +1322,7 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                 {form.mode === "paper" ? " paper auto-trade" : " signal only"} · {String(form.option_moneyness).toUpperCase()} ·
                 DTE {form.dte_filter.length ? form.dte_filter.join(",") : "all"} · {form.mode === "paper" && form.lots_override !== "" ? `${form.lots_override} lot(s) override` : sizingSummary}
                 {form.mode === "paper" && form.capital_amount !== "" ? ` · capital ₹${fmtNum(Number(form.capital_amount), 0)} (${form.capital_basis})` : ""}.
-                Evaluation runs every market minute (09:15–15:30 IST, signal window 09:25–14:50); square-off 15:00 IST.
+                Evaluation runs every market minute (09:15–15:30 IST, signal window {form.trade_window_start || "09:25"}–{form.trade_window_end || "14:50"}); square-off 15:00 IST.
                 The signal window closes well before the 15:15 closing auction, so a frozen index never produces an entry.
               </div>
             </>

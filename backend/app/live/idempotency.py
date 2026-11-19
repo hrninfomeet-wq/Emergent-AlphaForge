@@ -121,8 +121,9 @@ class IntentStore:
     `FakeAsyncCollection`.
     """
 
-    def __init__(self, collection: Any) -> None:
+    def __init__(self, collection: Any, receipt_collection: Any = None) -> None:
         self._col = collection
+        self._receipt_col = receipt_collection
 
     # ------------------------------------------------------------------
     # record_intent — write BEFORE any broker POST
@@ -312,6 +313,7 @@ class IntentStore:
         )
 
         if result.matched_count == 1:
+            self._capture_submitted(client_order_id)
             return  # success
 
         # matched_count == 0 — no doc with norenordno=None matched.
@@ -329,6 +331,7 @@ class IntentStore:
 
         # F4: idempotent retry — same norenordno means the call already succeeded
         if existing_nord == norenordno:
+            self._capture_submitted(client_order_id)
             return  # no-op success
 
         # F3: doc exists but has a DIFFERENT norenordno → refuse to overwrite
@@ -337,6 +340,15 @@ class IntentStore:
             f"norenordno={existing_nord!r}. "
             f"Refusing to overwrite with {norenordno!r}."
         )
+
+    def _capture_submitted(self, client_order_id):
+        # Evidence cannot delay or fail the executor after its broker ACK.
+        if self._receipt_col is not None:
+            from app.live import receipt_capture
+            try:
+                receipt_capture.submitted(self._col, self._receipt_col, client_order_id)
+            except Exception:
+                receipt_capture.failure()
 
     # ------------------------------------------------------------------
     # resume_unsubmitted — startup reconciliation
@@ -400,4 +412,5 @@ def default_store() -> "IntentStore":
     """
     from app.db import get_db  # type: ignore[import]
 
-    return IntentStore(get_db().live_orders)
+    db = get_db()
+    return IntentStore(db.live_orders, db.execution_receipt_events)

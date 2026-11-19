@@ -1,0 +1,45 @@
+{
+  "instrument": "SENSEX spot",
+  "session_date": "2026-10-08",
+  "recorded_at_utc": "2026-10-08 08:55:44 UTC",
+  "cutoff_ist": "14:22",
+  "anchor_available_ist": "2026-10-08T14:22:00+05:30",
+  "anchor_bar_timestamp": "2026-10-08T14:21:00+05:30",
+  "anchor": 71419.15,
+  "retrieved_at_ist": "2026-10-08T14:22:16.033048+05:30",
+  "target": "official_close",
+  "point": 71400,
+  "low": 71300,
+  "high": 71600,
+  "point_tilt": -53.05513457980123,
+  "unshifted_historical": {
+    "point": 71453.0551345798,
+    "lower": 71339.82425026066,
+    "upper": 71588.46394541232
+  },
+  "evidence_tier": "Historically benchmarked; discretionary point overlay not forward-validated",
+  "calibration": {
+    "training_dates": [
+      "2026-09-23",
+      "2026-09-24",
+      "2026-09-25",
+      "2026-09-28",
+      "2026-09-29",
+      "2026-09-30",
+      "2026-10-01",
+      "2026-10-05",
+      "2026-10-06",
+      "2026-10-07"
+    ],
+    "lookback": 10,
+    "nominal_coverage": 0.8,
+    "observed_test_hits": 22,
+    "test_sessions": 36,
+    "terminal_hits": 3,
+    "terminal_sessions": 5,
+    "notes": "Exploratory mixed-event sessions; 80% is not demonstrated future coverage. 14:18 provisional calculation superseded before publication by fresh exact 14:22 cutoff; no parameters tuned to outcomes."
+  },
+  "invalidation": "A completed 15-minute close above 71,600 invalidates the continued-weakness thesis.",
+  "risk": "Downtrend extension or short-covering/auction discontinuity can take the official close outside the band. No live auction imbalance or option-positioning inference.",
+  "outcome": null
+}

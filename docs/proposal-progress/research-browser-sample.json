@@ -1,0 +1,35 @@
+{
+  "source_and_winner": [
+    {
+      "id": "718fb06b-bfcb-46d9-8dc3-1758079793d4",
+      "name": "Confluence NIFTY \u00b7 Nov-Aug-26 331% rerun",
+      "interval": [
+        1761968700000,
+        1788775800000
+      ],
+      "entry_window": [
+        "09:25",
+        "15:00"
+      ],
+      "spread_pct": 0.25,
+      "exit_mode": "option_levels",
+      "option_net_pnl": 209933.04
+    },
+    {
+      "id": "546daf94-6631-4339-9eee-b592717950d5",
+      "name": "Optimized \u00b7 confluence_scalper \u00b7 NIFTY \u00b7 net_pnl_inr \u00b7 2026-09-02 00:26:52",
+      "interval": [
+        1761968700000,
+        1787739000000
+      ],
+      "entry_window": [
+        "09:25",
+        "14:45"
+      ],
+      "spread_pct": 1.0,
+      "exit_mode": "spot_exit",
+      "option_net_pnl": 333147.69
+    }
+  ],
+  "limitation": "Sample verifies the comparison UI; not an identical-input optimizer regression reproduction."
+}

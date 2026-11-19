@@ -1,0 +1,23 @@
+{
+  "checked_at_utc": "2026-10-24T16:30:52.913600+00:00",
+  "health": {
+    "db": "ok"
+  },
+  "source_sha256": "c8372540b14f5e5d784bd8dcd36b647fb1a3983ef57dac783d259555b6415125",
+  "frontend_bundle": "/static/js/main.a72bbe9b.js",
+  "frontend_hashes": [
+    "c8372540b14f5e5d784bd8dcd36b647fb1a3983ef57dac783d259555b6415125"
+  ],
+  "source_checks": {
+    "lib/receiptBrokerEvidence.js": true,
+    "components/live/ExecutionReceipts.jsx": true,
+    "components/live/cockpit/AccountTabs.jsx": true,
+    "components/live/LiveCockpit.jsx": true
+  },
+  "mode": "LIVE_OFFLINE",
+  "guard_count": 0,
+  "images": {
+    "backend": "sha256:794e20898ca43de3f4209cde48fb713017be4bf06ce70607cf727f5078478a6b",
+    "frontend": "sha256:115926a964281fd1e802c83e0b99bf0826273a74339050deef2bf477628ff5f1"
+  }
+}

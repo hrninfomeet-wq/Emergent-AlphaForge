@@ -1,0 +1,56 @@
+{
+  "checked_at_utc": "2026-10-24T04:37:56.267206+00:00",
+  "arm": {
+    "mode": "LIVE_OFFLINE",
+    "connected": false,
+    "session_expired": true,
+    "autoplace_armed": true,
+    "armed_deployments": 0,
+    "would_transmit_entry": false
+  },
+  "session_phase": "closed_day",
+  "guard_count": 0,
+  "guard_health": "off_hours",
+  "live_deployments": 0,
+  "open_live_rows": 0,
+  "active_paper_deployments": 9,
+  "unsubmitted_intents": 0,
+  "live_order_intents_total": 21,
+  "health_http": 200,
+  "health_db": "ok",
+  "paper_only_route_registered": true,
+  "running_rules": {
+    "NIFTY": {
+      "exch": "NFO",
+      "price_types": [
+        "LIMIT",
+        "SL-LMT"
+      ],
+      "products": [
+        "NRML",
+        "MIS"
+      ],
+      "lot_size": 65,
+      "freeze_qty": 3510
+    },
+    "SENSEX": {
+      "exch": "BFO",
+      "price_types": [
+        "LIMIT",
+        "SL-LMT"
+      ],
+      "products": [
+        "NRML",
+        "MIS"
+      ],
+      "lot_size": 20,
+      "freeze_qty": 1000
+    }
+  },
+  "page_http": {
+    "/paper": 200,
+    "/optimizer": 200,
+    "/live": 200,
+    "/live-trading": 200
+  }
+}

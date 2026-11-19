@@ -1,16 +1,18 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle, XCircle, Loader2, AlertTriangle, Send } from "lucide-react";
 import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
 import { getApiErrorMessage } from "@/lib/apiError";
 import { placementOutcome, standDownManualExecution } from "@/lib/liveCockpitActions";
+import { manualTicketPlacementError, samePreviewEntry } from "@/lib/manualTicket";
+import { defaultManualRulesFor, manualTicketCapabilitySummary } from "./manualTicketCapabilities";
 import PayoffChart from "./PayoffChart";
 
 /**
  * LiveOrderTicket — exchange-aware order ticket that builds a multi-lot option
  * order, previews it through the backend choke-point, and queues it for the
- * two-man approval flow. This component NEVER places a real order itself — the
- * parent owns the approval queue and the explicit approve step.
+ * confirmation flow. Manual placement uses the supervised one-lot BUY/MIS/LIMIT
+ * executor; other permitted tickets can be previewed but cannot be approved.
  *
  * Props:
  *   mode      — the live execution mode string (informational; the queue/approve
@@ -30,14 +32,8 @@ import PayoffChart from "./PayoffChart";
 const UNDERLYINGS = ["NIFTY", "BANKNIFTY", "SENSEX"];
 const OPTION_SIDES = ["CE", "PE"];
 
-// Local fallback while server rules are loading or unavailable. PREFER server rules.
-// Values MIRROR the backend flattrade_symbol.EXCHANGE_RULES (incl. the snake_case
-// expiry_cadence tokens the server returns) so the offline preview matches.
-const DEFAULT_RULES = {
-  NIFTY: { exch: "NFO", lot_size: 65, freeze_qty: 3510, tick: 0.05, products: ["NRML", "MIS"], price_types: ["LIMIT", "MARKET", "SL-LMT"], expiry_cadence: "weekly_tue" },
-  BANKNIFTY: { exch: "NFO", lot_size: 30, freeze_qty: 1440, tick: 0.05, products: ["NRML", "MIS"], price_types: ["LIMIT", "MARKET", "SL-LMT"], expiry_cadence: "monthly_last_tue" },
-  SENSEX: { exch: "BFO", lot_size: 20, freeze_qty: 1000, tick: 0.05, products: ["NRML", "MIS"], price_types: ["LIMIT", "MARKET", "SL-LMT"], expiry_cadence: "weekly_thu" },
-};
+// Local fallback while server rules are loading or unavailable. The display
+// labels these as offline defaults until the app rules endpoint responds.
 
 // Human labels for the snake_case expiry_cadence tokens the backend returns.
 const CADENCE_LABELS = {
@@ -48,10 +44,6 @@ const CADENCE_LABELS = {
 
 function cadenceLabel(token) {
   return CADENCE_LABELS[token] ?? token ?? "–";
-}
-
-function defaultRulesFor(underlying) {
-  return DEFAULT_RULES[underlying] ?? DEFAULT_RULES.NIFTY;
 }
 
 const FAT_FINGER_CAP = 50;
@@ -75,7 +67,8 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
   const [targetPct, setTargetPct] = useState(""); // optional guard target %
 
   // ── Exchange rules ──────────────────────────────────────────────────────
-  const [rules, setRules] = useState(() => defaultRulesFor("NIFTY"));
+  const [rules, setRules] = useState(() => defaultManualRulesFor("NIFTY"));
+  const [rulesSource, setRulesSource] = useState("offline");
   const [rulesLoading, setRulesLoading] = useState(false);
   const [rulesError, setRulesError] = useState(null);
 
@@ -104,11 +97,15 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
   const [placeUnconfirmed, setPlaceUnconfirmed] = useState(null);
   const [queuedConfirm, setQueuedConfirm] = useState(false);
   const [showPlaceConfirm, setShowPlaceConfirm] = useState(false);
+  const [preparedApproval, setPreparedApproval] = useState(null);
+  const ticketRevision = useRef(0);
   const [placeResult, setPlaceResult] = useState(null); // executor result {placed, norenordno, reason, ...}
 
   // Any form change invalidates a prior preview/queue result so a stale green
   // preview can never be queued.
   const resetTransient = useCallback(() => {
+    ticketRevision.current += 1;
+    setPreparedApproval(null);
     setPreviewResult(null);
     setPreviewError(null);
     setQueueResult(null);
@@ -123,13 +120,16 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
     let cancelled = false;
     setRulesLoading(true);
     setRulesError(null);
+    setRules(defaultManualRulesFor(underlying));
+    setRulesSource("offline");
     api
       .getOrderRules(underlying)
       .then((res) => {
         if (cancelled || !res) return;
         setRules(res);
+        setRulesSource("api");
         // Reconcile current selects against the server price_types/products.
-        const priceTypes = Array.isArray(res.price_types) ? res.price_types : [];
+        const priceTypes = Array.isArray(res.price_types) ? res.price_types.filter((type) => type !== "MARKET") : [];
         const products = Array.isArray(res.products) ? res.products : [];
         if (priceTypes.length > 0) {
           setOrderType((cur) => (priceTypes.includes(cur) ? cur : priceTypes[0]));
@@ -141,7 +141,8 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
       .catch((e) => {
         if (cancelled) return;
         // Fall back to a sensible default but keep a note for the chip strip.
-        setRules(defaultRulesFor(underlying));
+        setRules(defaultManualRulesFor(underlying));
+        setRulesSource("offline");
         setRulesError(
           getApiErrorMessage(e, "rules unavailable — using defaults")
         );
@@ -157,15 +158,16 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
   // Effective rules + derived option lists (always non-empty so selects render).
   const priceTypes =
     Array.isArray(rules?.price_types) && rules.price_types.length > 0
-      ? rules.price_types
-      : defaultRulesFor(underlying).price_types;
+      ? rules.price_types.filter((type) => type !== "MARKET")
+      : defaultManualRulesFor(underlying).price_types;
   const products =
     Array.isArray(rules?.products) && rules.products.length > 0
       ? rules.products
-      : defaultRulesFor(underlying).products;
+      : defaultManualRulesFor(underlying).products;
 
-  const lotSize = Number(rules?.lot_size) || defaultRulesFor(underlying).lot_size;
-  const freezeQty = Number(rules?.freeze_qty) || 0;
+  const lotSize = Number(rules?.lot_size) || defaultManualRulesFor(underlying).lot_size;
+  const capability = manualTicketCapabilitySummary({ underlying, rules, source: rulesSource });
+  const freezeQty = capability.freezeQty;
 
   const lotsNum = parseInt(lots, 10);
   const qty = Number.isFinite(lotsNum) && lotsNum > 0 ? lotsNum * lotSize : 0;
@@ -265,11 +267,11 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
 
   const buildPayload = () => ({
     underlying,
-    strike: parseInt(strike, 10),
+    strike: Number(strike),
     option_type: optionSide,
     side,
     expiry_date: expiryDate,
-    lots: parseInt(lots, 10),
+    lots: Number(lots),
     order_type: orderType,
     product,
     ref_ltp: isMarket ? null : parseFloat(refLtp),
@@ -290,10 +292,11 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
     !!strike &&
     !!expiryDate &&
     Number.isFinite(lotsNum) &&
+    Number.isInteger(Number(lots)) &&
     lotsNum > 0 &&
     (isMarket || (refLtp !== "" && Number.isFinite(parseFloat(refLtp))));
 
-  const canPreview = hasRequired && !previewBusy && !disabled;
+  const canPreview = hasRequired && !previewBusy && !queueBusy && !disabled;
 
   const handlePreview = async () => {
     if (!canPreview) return;
@@ -303,9 +306,10 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
     setQueueResult(null);
     setQueueError(null);
     setQueuedConfirm(false);
+    const payload = buildPayload();
     try {
-      const res = await api.previewLiveOrder(buildPayload());
-      setPreviewResult(res);
+      const res = await api.previewLiveOrder(payload);
+      setPreviewResult({ ...res, ticketKey: JSON.stringify(payload) });
     } catch (e) {
       setPreviewError(getApiErrorMessage(e, "Preview failed"));
     } finally {
@@ -316,17 +320,46 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
   // Place is only enabled after a preview that returned ok === true — and NEVER
   // while a previous place is unconfirmed (re-placing then risks a duplicate
   // live position).
+  const placementError = manualTicketPlacementError(buildPayload(), previewResult);
   const canPlace =
-    previewResult != null && previewResult.ok === true && !queueBusy && !disabled
+    placementError == null && !queueBusy && !disabled
     && placeUnconfirmed == null;
 
-  // DIRECT PLACE (no separate approval-queue / mode-switch step): on confirm we
-  // auto-arm LIVE_TEST, then create + redeem a one-shot approval in one shot. The
-  // backend safety chain (choke-point validation, margin, fat-finger, the single
-  // executor chokepoint, software-guard registration) is unchanged — only the UI
-  // friction (manual mode switch + a separate approval queue) is removed. The
-  // REAL-MONEY confirm dialog is the per-trade gate.
+  const handlePrepareConfirmation = async () => {
+    if (!canPlace) return;
+    const payload = buildPayload();
+    const revision = ticketRevision.current;
+    setQueueBusy(true);
+    setQueueError(null);
+    setPreparedApproval(null);
+    try {
+      const created = await api.createOrderApproval(payload);
+      if (revision !== ticketRevision.current) return;
+      if (!created?.ok) {
+        setQueueResult(created ?? { ok: false, verdicts: [] });
+        return;
+      }
+      const children = created.summary?.would_send;
+      if (children?.length !== 1 || previewResult?.children?.length !== 1 ||
+          !samePreviewEntry(previewResult.children[0], children[0])) {
+        setPreviewResult(null);
+        setQueueError("The resolved order changed. Preview and confirm it again.");
+        return;
+      }
+      setPreparedApproval({ ...created, ticketKey: JSON.stringify(payload) });
+      setPlaceResult(null);
+      setShowPlaceConfirm(true);
+    } catch (e) {
+      if (revision === ticketRevision.current) setQueueError(getApiErrorMessage(e, "Could not prepare confirmation"));
+    } finally {
+      setQueueBusy(false);
+    }
+  };
+
+  // Only the final confirmation arms and redeems the already-prepared approval.
+  // The executor rechecks its resolved fields before any submission.
   const handlePlaceConfirmed = async () => {
+    if (!canPlace || preparedApproval?.ticketKey !== JSON.stringify(buildPayload())) return;
     setQueueBusy(true);
     setQueueResult(null);
     setQueueError(null);
@@ -344,18 +377,13 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
     let redeemAttempted = false;
     let unconfirmed = false;
     try {
-      // 1. arm LIVE_TEST (single-shot)
+      const created = preparedApproval;
+      // Arm LIVE_TEST only after the server accepts this instruction.
       try {
         await api.setLiveMode("LIVE_TEST", true);
         armed = true;
       } catch (e) {
         setQueueError(`Could not arm LIVE_TEST: ${getApiErrorMessage(e, "mode error")}`);
-        return;
-      }
-      // 2. create the approval (re-validates server-side)
-      const created = await api.createOrderApproval(buildPayload());
-      if (!created?.ok) {
-        setQueueResult(created ?? { ok: false, verdicts: [] });
         return;
       }
       // 3. redeem the one-shot token → place via the executor chokepoint.
@@ -399,6 +427,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
       }
     } finally {
       setShowPlaceConfirm(false);
+      setPreparedApproval(null);
       // Stand down: armed but nothing placed → revert to a safe mode (best-effort).
       // NEVER when the place is unconfirmed: reverting to LIVE_OFFLINE while an
       // order may be working at the broker reads as "nothing happened", which is
@@ -452,6 +481,24 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
         )}
       </div>
 
+      <section className="rounded-md border border-line bg-bg-2/50 px-3 py-2 text-[11px] space-y-1" aria-label="Manual ticket capabilities">
+        <div className="flex items-center gap-2">
+          <span className="font-semibold text-foreground">Ticket capabilities</span>
+          <span className={capability.rulesVerified ? "text-success" : "text-warning"}>
+            {capability.rulesSource === "app-reported"
+              ? "App-reported rules · running build / broker state unverified"
+              : capability.rulesSource === "mixed"
+                ? "Partial app rules + offline defaults · unverified"
+                : "Offline defaults · unverified"}
+          </span>
+        </div>
+        <p className="text-dim">
+          Selectable by app rules: {capability.products.join(" / ")} · {capability.priceTypes.join(" / ")}.
+          {" "}Manual placement supports {capability.manualInstruction}.
+        </p>
+        <p className="text-dim">{capability.unsupportedInstruction} {capability.exitInstruction}</p>
+      </section>
+
       {/* ── Form grid ──────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         {/* Underlying */}
@@ -466,7 +513,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
               setAtmNote(null);
               resetTransient();
             }}
-            disabled={disabled}
+            disabled={disabled || queueBusy}
             className={inputCls}
           >
             {UNDERLYINGS.map((u) => (
@@ -490,7 +537,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
                 resetTransient();
               }}
               placeholder="e.g. 23000"
-              disabled={disabled}
+              disabled={disabled || queueBusy}
               className={`min-w-0 flex-1 ${inputCls}`}
             />
             <button
@@ -523,7 +570,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
               <button
                 key={s}
                 type="button"
-                disabled={disabled}
+                disabled={disabled || queueBusy}
                 onClick={() => {
                   setOptionSide(s);
                   setPremiumBadge(null);
@@ -601,7 +648,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
               setAtmNote(null);
               resetTransient();
             }}
-            disabled={disabled}
+            disabled={disabled || queueBusy}
             className={inputCls}
           />
         </div>
@@ -615,7 +662,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
               setOrderType(e.target.value);
               resetTransient();
             }}
-            disabled={disabled}
+            disabled={disabled || queueBusy}
             className={inputCls}
           >
             {priceTypes.map((pt) => (
@@ -633,7 +680,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
               setProduct(e.target.value);
               resetTransient();
             }}
-            disabled={disabled}
+            disabled={disabled || queueBusy}
             className={inputCls}
           >
             {products.map((pr) => (
@@ -655,7 +702,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
               resetTransient();
             }}
             placeholder="1"
-            disabled={disabled}
+            disabled={disabled || queueBusy}
             className={inputCls}
           />
         </div>
@@ -726,7 +773,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
               setBandPct(e.target.value);
               resetTransient();
             }}
-            disabled={disabled}
+            disabled={disabled || queueBusy}
             className={inputCls}
           />
         </div>
@@ -746,7 +793,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
               resetTransient();
             }}
             placeholder="e.g. 50"
-            disabled={disabled}
+            disabled={disabled || queueBusy}
             className={inputCls}
           />
         </div>
@@ -764,7 +811,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
               resetTransient();
             }}
             placeholder="none"
-            disabled={disabled}
+            disabled={disabled || queueBusy}
             className={inputCls}
           />
         </div>
@@ -910,6 +957,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
       {/* ── Place (direct, one-click) ──────────────────────────────────── */}
       {previewResult && !showPlaceConfirm && (
         <div className="space-y-2">
+          {placementError && <p className="text-xs text-warning">{placementError}</p>}
           {previewResult.ok !== true && (
             <div className="flex items-center gap-1.5 text-xs text-dimmer font-mono">
               <AlertTriangle className="w-3.5 h-3.5 text-warning shrink-0" />
@@ -919,7 +967,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
           <button
             type="button"
             disabled={!canPlace}
-            onClick={() => { setShowPlaceConfirm(true); setPlaceResult(null); setQueueError(null); setQueueResult(null); }}
+            onClick={handlePrepareConfirmation}
             className="inline-flex items-center gap-1.5 px-5 py-2 rounded-md border-2 border-danger/70 bg-danger text-white text-sm font-mono font-bold hover:bg-danger/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             <Send className="w-3.5 h-3.5" />
@@ -937,18 +985,18 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
           </div>
           <div className="text-xs text-danger/80 font-mono space-y-0.5">
             <div>
-              {side === "B" ? "Buy" : "Sell"} <span className="font-bold">{lots}</span> lot(s){" "}
-              <span className="font-bold">{underlying} {strike} {optionSide}</span> · {orderType} · {product}
+              {buildPayload().side === "B" ? "Buy" : "Sell"} <span className="font-bold">{buildPayload().lots}</span> lot(s){" "}
+              <span className="font-bold">{buildPayload().underlying} {buildPayload().strike} {buildPayload().option_type}</span> · {buildPayload().order_type} · {buildPayload().product}
             </div>
             <div>
-              {qty} qty {!isMarket && refLtp ? `@ ~${fmtINR(parseFloat(refLtp))} ±${bandPct}%` : "@ MARKET"}{" "}
-              · guard stop {stopPct || 50}%{targetPct ? ` · target ${targetPct}%` : ""}
+              {preparedApproval?.summary?.would_send?.[0]?.qty} qty @ limit {fmtINR(Number(preparedApproval?.summary?.would_send?.[0]?.prc))}{" "}
+              · band {buildPayload().band_pct}% · guard stop {buildPayload().levels.stop_pct}%{buildPayload().levels.target_pct ? ` · target ${buildPayload().levels.target_pct}%` : ""}
             </div>
           </div>
           <div className="flex items-center gap-2">
             <button
               type="button"
-              disabled={queueBusy}
+              disabled={!canPlace}
               onClick={handlePlaceConfirmed}
               className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md border border-danger/60 bg-danger text-white text-xs font-mono font-bold hover:bg-danger/90 disabled:opacity-50 transition-colors"
             >

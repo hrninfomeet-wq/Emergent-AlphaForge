@@ -1,0 +1,14 @@
+{
+  "health": {
+    "unavailable": "URLError"
+  },
+  "mode": {
+    "unavailable": "URLError"
+  },
+  "guard": {
+    "unavailable": "URLError"
+  },
+  "database": {
+    "unavailable": true
+  }
+}

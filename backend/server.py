@@ -32,6 +32,7 @@ from app.upstox_stream import DEFAULT_STREAM_MODE
 from app.warehouse_autoupdate import daily_autoupdate_loop
 from app import upstox_client
 from app.encryption import fernet_startup_warning
+from app.build_identity import read_manifest as read_build_manifest
 
 from app.runtime import (
     DEFAULT_PROFILES,
@@ -69,6 +70,8 @@ async def startup() -> None:
     if fernet_warning:
         log.warning(fernet_warning)
     await ensure_indexes()
+    from app.live.receipt_capture import initialize as initialize_receipts
+    await initialize_receipts(get_db().execution_receipt_events)
     registry = get_registry()
     registry.auto_discover()
     log.info(f"Discovered {len(registry.list_all())} strategy plugins")
@@ -350,6 +353,12 @@ async def health():
         return {"db": "ok"}
     except Exception as e:
         raise HTTPException(503, str(e))
+
+
+@api.get("/build-info")
+async def build_info():
+    """Read baked source provenance; never contacts a database or broker."""
+    return read_build_manifest()
 
 
 # ---------------------------------------------------------------------------

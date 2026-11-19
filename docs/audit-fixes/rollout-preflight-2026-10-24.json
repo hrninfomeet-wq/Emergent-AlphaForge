@@ -1,0 +1,27 @@
+{
+  "checked_at_utc": "2026-10-23T18:46:01.039491+00:00",
+  "operator_confirmed_flat": true,
+  "mode": "LIVE_OFFLINE",
+  "single_shot_consumed": false,
+  "arm": {
+    "mode": "LIVE_OFFLINE",
+    "connected": true,
+    "session_expired": false,
+    "autoplace_armed": true,
+    "armed_deployments": 0
+  },
+  "session_phase": "closed_day",
+  "guard_count": 0,
+  "guard_rehydrated_count": 0,
+  "guard_health": "off_hours",
+  "live_deployments_all_statuses": 0,
+  "open_live_journal_rows": 0,
+  "active_paper_deployments": 9,
+  "journal_order_state_counts": [
+    {
+      "_id": "SUBMITTED",
+      "count": 21
+    }
+  ],
+  "unsubmitted_intents": 0
+}

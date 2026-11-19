@@ -2,6 +2,100 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased; frontend deployed 2026-11-19] — chart terminal controls
+
+- Add individual chart expand/restore beside Indicators in normal and maximized
+  layouts, preserving mounted charts and shared confirmation dialogs.
+- Add RSI crosshair/latest pane values, consecutive watchlist additions, a saved
+  maximized watchlist drawer and Default/White chart backgrounds.
+- Draw labelled Premium/Discount bands across the viewport using the existing
+  confirmed swing range, including its 50% equilibrium line.
+- Preserve the shared trading path; frontend-only rollout left execution services
+  running. See [progress](PROGRESS.md) for tests, rollout identity and limitations.
+
+## [Unreleased; repository consolidation 2026-11-19]
+
+- Include previously outstanding audit fixes, manual-ticket instruction binding,
+  execution receipt capture/display, research comparisons, deployment source
+  transfer, dated costs, optimizer controls, tests and supporting records.
+- Publication checks found eight selected Python failures; frontend and Node
+  checks passed. Publication does not certify live trading. See the
+  [publication checkpoint](docs/publication-checkpoint-2026-11-19.md).
+
+## [Unreleased; deployed 2026-11-02] — chart session change
+
+- Replace candle-open return in the chart header with points and percentage
+  versus the quote's previous session close, independent of candle timeframe.
+- Expose the reference in a tooltip; date old quotes and show unavailable when
+  the reference is missing. Focused tests and production image builds pass.
+  Deployed after flat-account confirmation; real quote arithmetic and 1m/5m/1d
+  Chrome display verified. Mongo unchanged. [Checkpoint](docs/chart-terminal/session-change-checkpoint.md).
+
+## [Unreleased; frontend rebuilt 2026-11-02] — indicator instances and drawing styles
+
+- Add independent EMA/SMA and other indicator instances, with separate parameters,
+  colors, widths and oscillator panes. Indicator setup persists in this browser.
+- Add arrows, up/down markers, rays, horizontal rays, vertical lines and a
+  price/time ruler. Select color, width and solid/dashed/dotted lines for new or
+  selected drawings. Existing semantic drawing storage remains compatible.
+- 22 Node and 22 React checks, production builds and Chrome reload/style checks
+  pass. Only frontend recreated; trading backend/Mongo stayed running. Broker
+  tokens expired, live acceptance pending. [Checkpoint](docs/chart-terminal/tools-extension-checkpoint.md).
+
+## [Unreleased; local stack rebuilt 2026-11-01] — private chart terminal
+
+- Added `/charts`: all available supported NSE/BSE indices, equities and current
+  F&O instrument search; saved index history plus on-demand Upstox candles,
+  timeframe switching, bounded pagination and transient live subscriptions.
+- Added volume/VWAP, EMA/SMA, Bollinger Bands, RSI, MACD, Supertrend, ATR and ADX;
+  horizontal/trend/Fibonacci drawings with contract-aware local persistence.
+  Index volume/VWAP remains unavailable rather than invented.
+- Added read-only broker/paper entry, protection and P&L overlays, with explicit
+  identity, source and freshness. No chart order controls or new warehouse writes.
+- Protected execution subscription ownership and reconciled REST/stream candle
+  ordering. Selected tests and production build pass. Real historical API and
+  Chrome checks pass after flat-account approval and authenticated empty-book
+  checks. Mongo stayed running; both broker sessions survived. Corrected light
+  heading contrast and on-chart P&L stacking. Open-market acceptance remains
+  pending. [Checkpoint](docs/chart-terminal/implementation-checkpoint.md).
+
+## [Unreleased; source only 2026-10-26] — conditional Quick Trade
+
+- Added paper-default conditional panel with trigger-time master strike resolution, spot/premium/time predicates, fill-based exits, live confirmation and persisted order/alert display.
+- Added durable engine/API, paper/Flattrade adapters, partial-fill/reconciliation logic, mode-specific kill integration and exit-only watchdog service definition.
+- Python/JSX syntax checks passed. Behavioural tests, paper runs, live broker acceptance and deployment are deferred/unverified. No live order/session change. [Checkpoint](docs/quick-trade-audit/IMPLEMENTATION.md).
+
+## [Unreleased; local stack rebuilt 2026-10-24] — evidence and comparison surfaces
+
+- **Build identity:** frontend/backend captured-source fingerprints and optional
+  Git metadata are baked from a shared allowlisted Docker context. The sidebar
+  distinguishes match, mismatch and missing/unavailable evidence; host-checkout
+  freshness and runtime/dependency identity are explicitly unverified.
+- **Saved research comparison:** Backtest Lab reads full saved runs/presets, jobs
+  and linked winners; compares effective policies, parameter bounds and inclusion
+  evidence; keeps missing data unknown and separates premium-native results.
+- **Read-only execution receipts:** Live Broker → Trade book separates stored
+  instructions, order-specific fills, journal estimates and guard registration.
+  No history, execution, risk-cap or schema changes. Full durable approval/fill/
+  exit reconciliation remains open; historical missing fills are not fabricated.
+- **Broker snapshot comparison:** receipts reuse the cockpit order book and its read time; exact-order identity, malformed/contradictory data and stale-read checks withhold unreliable fills. Adds no broker polling or persistence. Final resumed checks: 29 React and 17 Node fixtures; rebuilt and Chrome-reviewed.
+- **Ticket capabilities:** NIFTY/SENSEX app rules, fallback uncertainty and the
+  actual one-lot BUY/MIS/LIMIT manual instruction are visible. CO/BO wording
+  describes app restrictions, not an unverified exchange-wide prohibition.
+- **Checks:** 45 Python, 25 React and nine Node fixtures pass; final image build,
+  source parity and Chrome checks recorded in
+  [`docs/PROPOSAL_IMPLEMENTATION_2026-10-24.md`](docs/PROPOSAL_IMPLEMENTATION_2026-10-24.md).
+  No broker order or live-control action was used as a test.
+
+## [Unreleased; local stack rebuilt 2026-10-24] — 2026-10-23 audit fixes
+
+- **Manual ticket matches the supervised executor.** Unsupported size/product/type/buffer combinations cannot be approved as a different one-lot BUY/MIS/LIMIT instruction. Confirmation uses normalized settings and the resolved preview; approval binds symbol, quantity, price and other execution fields. Resolution drift or malformed saved approval requires another preview. MARKET is removed from the advertised capability lists.
+- **Saved backtest transfer keeps effective execution settings.** The wizard fetches full selected-run detail and carries effective costs, spread, slippage, DTE, sizing, entry window and mixed-unit exits. Late source responses cannot replace a newer selection. This is a source-transfer fix, not proof that historical and forward execution are identical.
+- **Automatic option-sale STT follows the sale date.** Defaults use the dated schedule in IST; explicit saved numeric rates remain pinned. Paired/premium backtests, paper costs and live journal costing forward the exit timestamp. No saved records are rewritten; strategy and gross risk-cap logic are unchanged.
+- **Optimizer controls describe their actual scope.** OFF retains strategy-declared periods; ON requests catalog expansion with the premium-native exception stated. Advanced overrides are reported conservatively when frontend metadata cannot establish the effective search space.
+- **Paper Stop ALL is paper-only.** The paper page uses a dedicated route that pauses paper/signal-only deployments and closes paper trades. A concurrent transition to live is rechecked on the pause write. Failed/skipped closes are separated from completed closes and generate a warning; the existing account-wide stop path retains its scope.
+- **Validation and rollout:** operator approved both original safety diffs and the supplemental completion-reporting correction. Final selected isolated pytest run: 443 passed; earlier 3 React confirmation cases passed. Backend/frontend Docker builds and restart completed; running source and served bundle parity checked. MongoDB stayed running; no order, kill-switch or live-enable action was used for validation. Evidence and remaining reproduction gaps: [`docs/AUDIT_FIX_CHECKPOINT_2026-10-23.md`](docs/AUDIT_FIX_CHECKPOINT_2026-10-23.md).
+
 ## [Unreleased] — Live-path integrity fixes from the 2026-10-07 scalping feasibility audit
 
 Each finding was verified against the code first, then fixed test-first (one commit per item).
@@ -4148,3 +4242,8 @@ A focused pass to make the warehouse fast, trustworthy, self-maintaining, and in
 - Walk-forward IS vs OOS validation
 - Equity curve + drawdown series
 - Statistical significance evaluation
+
+
+## 2026-10-25 — Durable execution receipt storage (rebuilt and verified)
+
+Approved additive `execution_receipt_events` persistence retains future approval decisions, submitted instructions and observed broker-book fills without rewriting trade-journal P&L. Strict identity checks, bounded deferred writes, duplicate suppression and explicit missing/conflicting evidence feed a separate persisted-evidence view. No extra broker polling or changed safety controls. Both images are rebuilt; running source parity, the unique collection index, receipt API and the user's Edge tab are verified. Mongo stayed running and no live test was performed. See `docs/PROPOSAL_IMPLEMENTATION_2026-10-24.md` for checks and capture limits.

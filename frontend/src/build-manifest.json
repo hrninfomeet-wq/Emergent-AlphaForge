@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "scope": "alphaforge-source-v1",
+  "status": "unknown",
+  "source_sha256": null,
+  "built_at": null,
+  "git_revision": null,
+  "git_dirty": null,
+  "checkout_status": "unverified"
+}

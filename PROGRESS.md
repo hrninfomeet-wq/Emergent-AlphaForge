@@ -1,5 +1,12 @@
 # AlphaForge chart terminal upgrade
 
+## Repository publication, November 19
+
+User authorized committing all outstanding project work to local main and pushing
+to GitHub. Source/evidence scan is complete; credentials, caches and local build
+output remain excluded. Publication checks and known failures are recorded in
+docs/publication-checkpoint-2026-11-19.md. Git push verification is the final gate.
+
 ## Completed: individual chart full screen, November 19
 
 - Added an expand/restore icon immediately before Indicators in every chart's

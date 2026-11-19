@@ -10,7 +10,104 @@
 > entry point) · [`LIVE_VALIDATION_PLAN_2026-08.md`](LIVE_VALIDATION_PLAN_2026-08.md) (the next
 > market session) · `CHANGELOG.md` (what shipped, per release).
 
-**Last updated:** 2026-10-06 (Claude Opus 5.5 — the market-session checklist now lives only in
+### Repository consolidation - 2026-11-19
+
+- [x] Current chart status added to HANDOFF/CHANGELOG; all outstanding source,
+  tests and supporting records reviewed for publication. No deployment or orders.
+- [x] Selected verification: 410 Python passed, 8 failed; 47 React and 34 Node
+  passed. Failures and commands: publication-checkpoint-2026-11-19.md.
+- [ ] Final gate: verify GitHub main equals local main after the authorized push.
+
+### Terminal upgrade — deployed locally 2026-11-05
+
+- [x] Item 1: shared conditional chart trading and blotter; isolated paper fill,
+  P&L, confirmed drag and cancellation passed. Commits 9894d7d and 398a955.
+- [x] Item 2: all 17 layout variants, active context, shared stream recovery,
+  maximize/search and isolated restart persistence passed. Commit 0548405.
+- [x] Item 3: Mongo watchlist + quote ownership backend committed 4ddacbe;
+  41 selected backend and 20 frontend checks pass. Chrome add/edit/reorder/delete
+  survived isolated process restart with identical Mongo response digest.
+- [x] Item 4: option chain implemented/tested and integrated into local main 68d5acb.
+  Real read-only chain schema and isolated Chrome updates passed; market-hours
+  acceptance remains pending. See chart-terminal/option-chain-acceptance.md.
+- [x] Item 5: research overlays, forecast journal/scoring and two read-only strategy
+  previews integrated at f8b6823. Clean tests/build, Chrome + Mongo, and a real
+  NIFTY forward forecast checked; see chart-terminal/analysis-acceptance.md.
+- [x] Item 6: review-only ranked proposals in ../FEATURE_PROPOSALS.md. None built.
+- [x] Local rollout: deployed cac2f8f, source fingerprint matches across the app.
+  Two-tab Chrome acceptance for both option chains, full screen and order types
+  passed. Watchlist edits survived actual recreation and the normal launcher.
+  See [rollout checks](chart-terminal/rollout-acceptance.md) and [progress](../PROGRESS.md).
+- [ ] Operator: compare moving prices on the deployed screen during the next
+  session. Actual real-order acceptance remains exclusively the user's check.
+
+### Private chart terminal — 2026-11-01 deployed locally; market acceptance pending
+
+- [x] 2026-11-02 session-change header deployed after fresh flat-account confirmation. Previous-close based points/% matches actual SSE arithmetic and stays identical on 1m/5m/1d in Chrome. Source fingerprints match; Mongo untouched. Market-hours moving-tick check remains separate. [Checkpoint](chart-terminal/session-change-checkpoint.md).
+
+- [x] 2026-11-02 requested extension: independent indicator instances and persisted settings; arrows/rays/ruler/vertical lines; drawing color/width/dash controls. 22 Node + 22 React checks and builds pass, Chrome save/reload verified. Frontend-only deployment preserves the running backend; captured-source badge mismatch expected. [Evidence](chart-terminal/tools-extension-checkpoint.md).
+
+- [x] Operator approved implementation after research; any supported NSE/BSE symbol, saved index history, read-only paper/broker overlays, no chart orders. Branch `codex/chart-terminal` preserves unrelated dirty work.
+- [x] Data/chart/indicator/drawing source and route/nav written; temporary feed ownership tests pass. Detailed current state: [chart-terminal/implementation-checkpoint.md](chart-terminal/implementation-checkpoint.md).
+- [x] Independent review findings corrected with regressions. Root selected verification: 112 Python, 19 React, 18 Node checks passed; production build passed. Public Upstox master search confirmed broader indices/equities/futures.
+- [x] Safe local rollout and browser verification. Operator confirmed flat; authenticated books, guard and conditional orders empty. App services rebuilt; Mongo stayed running. Host/frontend/backend captured source matches. Real index/equity/F&O history, indicators, pagination and drawing/P&L fixture checked in Chrome. Earlier Docker-stopped/approval-pending checkpoint is superseded. No broker session/order mutations.
+- [ ] Open-market acceptance remains separate; this work does not certify existing execution controls.
+
+### Conditional Quick Trade — 2026-10-26 source checkpoint
+
+- [x] Operator superseded the audit stop and requested implementation only. Panel, durable engine, rules, adapters, API/lifecycle, mode-specific kill integration and watchdog source saved. [Implementation and gaps](quick-trade-audit/IMPLEMENTATION.md).
+- [x] Python compilation, frontend source parsing and whitespace checks completed. These are syntax checks, not trading acceptance tests.
+- [ ] Behavioural tests, per-index paper runs, browser/API/DB integration, restart/failover, broker acceptance and concurrent legacy exits: **not verified**, deferred under revised scope.
+- [x] Deployment completed after explicit user instruction: local-main feature commit, app images rebuilt, backend/frontend/watchdog running, new panel verified in Chrome and embedded browser; metadata loads for all supported underlyings. Mongo stayed running. No order or broker-session action. [Evidence and limits](quick-trade-audit/ROLLOUT.md). Remote origin/main not pushed; unrelated dirty work preserved.
+
+### Quick Trade safety audit — 2026-10-25 checkpoint (historical)
+
+- [x] Read-only application audit delivered: [report and stop decision](quick-trade-audit/REPORT.md), full field dictionary, official broker rules, public instrument sample, and executable no-network reproductions.
+- [x] Existing selected backend checks: 320 passed; React ticket/capability: 6 passed. New audit characterizations: manual flow 9 passed, recovery/outage 4 passed. Passing characterizations reproduce defects; they do not fix them.
+- [x] **Historical Part B stop, superseded by explicit implementation authorization:** restart replaces original protection with a default stop, manual exits have no resting broker stop, fixed exits use reference rather than fill. New conditional lifecycle is separate; it does not certify or silently replace the legacy manual path.
+- [ ] Current Quick Trade has no executable paper-order path; app-paper E2E and live broker acceptance remain unverified. No live orders, account changes, rebuilds or restarts were performed. Pre-existing dirty work preserved.
+
+### Durable receipt storage — 2026-10-25 checkpoint
+
+- [x] Operator approved the single additive receipt collection. Capture, append-only storage, sanitized reads and persisted-evidence UI are implemented; 320 selected Python, 36 React and 17 Node checks pass. See [current checkpoint](PROPOSAL_IMPLEMENTATION_2026-10-24.md).
+- [x] Rollout completed after Docker startup, renewed flat-account confirmation and safe app-state checks. Both images rebuilt; unique receipt index, running source parity, receipt API and the user's Edge tab verified. Mongo stayed running; both broker connections show connected. Evidence: `proposal-progress/durable-rollout-verification.json`. No real order or new protected-control action.
+- [ ] Full exit reconciliation/partial-fill journal accounting remains separate. Current captures are best effort from existing cockpit reads; pending work can be lost on a crash and historical missing evidence stays unknown.
+
+### Additive proposals — 2026-10-24 (rebuilt and browser-reviewed)
+
+- [x] Running build identity, saved research comparison, read-only execution
+  receipts and NIFTY/SENSEX capability display. Source review and focused tests
+  pass; final images are running and checked in Chrome. Shared checkpoint:
+  [PROPOSAL_IMPLEMENTATION_2026-10-24.md](PROPOSAL_IMPLEMENTATION_2026-10-24.md).
+- Receipts do not close the partial-fill journal accounting issue or certify
+  current broker fills. Original unreproduced reports and live validation remain
+  open. No protected-control code or strategy logic changed in this feature pass.
+- [ ] Full durable approval/fill/exit reconciliation: the read-only receipt
+  exposes missing evidence but does not create a durable approval or fill ledger.
+  Existing 21 order records have no stored order-specific fills. The additive persistence
+  design now has explicit approval; never fabricate historical
+  evidence or certify a journal mark as an exit fill.
+  - Current broker-book comparison now reuses the cockpit's existing snapshot,
+    with identity/freshness/contradiction checks and no extra broker requests.
+    Final frontend/Node checks: 29 React + 17 Node. Rebuilt and Chrome-reviewed.
+  - Schema proposal approved; implementation checkpoint above:
+    [DURABLE_RECEIPT_SCHEMA_PROPOSAL.md](proposal-progress/DURABLE_RECEIPT_SCHEMA_PROPOSAL.md).
+
+### Audit-fix checkpoint — 2026-10-23
+
+- [x] Local audit fixes reviewed: manual-ticket fidelity, saved-run execution-policy transfer, dated default STT and optimizer control clarity. Final isolated checks: 406 pytest cases, 3 React confirmation cases, production frontend build. Exact scope, commands and unresolved reports: [AUDIT_FIX_CHECKPOINT_2026-10-23.md](AUDIT_FIX_CHECKPOINT_2026-10-23.md).
+- [x] 2026-10-24: operator approved the paper-only Stop ALL, existing kill-switch rollout and supplemental completion-reporting diff. Backend/frontend rebuilt and restarted after flat-account confirmation and a clear app-state check. Final 443 selected tests pass; running backend hashes and served frontend sources match. MongoDB stayed running. See checkpoint for evidence and validation limits.
+- Future protected kill-switch/latch/deploy-validation changes still require a shown diff and explicit approval. Current mode remains LIVE_OFFLINE, with no live deployments or guarded positions; the broker session is reported expired. Original unreproduced issues remain open.
+
+### Onboarding checkpoint — 2026-10-21
+
+- [x] Read-only onboarding review completed: [evidence register and workflow](ONBOARDING_REVIEW_2026-10-21.md). Architecture, six owner-reported issues, isolated checks, reproduction gaps and approval boundaries recorded. No application source or trading state changed.
+- Confirmed: local Docker engine and API were unavailable. Historical fixes and passing offline checks do not close the owner's running-app reports.
+- **Safety finding for the operator:** the paper page's `Stop ALL paper trading` button and confirmation call `/deployments/stop-all`, whose source includes live flattening/disarming. Source mapping checked; action never invoked. Do not use this button for paper-only testing. No fix applied; safety-related changes require a proposed diff and approval.
+- Confirmed in isolated execution: indicator toggle OFF keeps Confluence's declared EMA periods searchable; ON adds catalog periods. Bounds overrides affect the helper's effective search space. Exact old-preset/new-job comparison remains unverified.
+- [ ] On the next owner-selected improvement, reproduce the specific symptom with recorded inputs and confirm running-code parity safely. Keep existing market-session validation and other open items open; this onboarding did not execute them.
+
+**Previous summary update:** 2026-10-06 (Claude Opus 5.5 — the market-session checklist now lives only in
 `LIVE_VALIDATION_PLAN_2026-08.md` §1; stale blocks below reconciled with the 2026-09-30 state).
 Previously 2026-09-30 (repo cleanup, docs refresh, open items after the Live Deployments uplift).
 
@@ -23,12 +120,12 @@ Record: [`scalping/README.md`](scalping/README.md) (deliverables 01–06). Paper
   the tape, record a SENSEX expiry Thursday).
 - [ ] **Operator decision:** update app-wide statutory constants in `backend/app/option_costs.py` (STT 0.001 → 0.0015,
   NSE 0.0003503 → 0.0003553) — reprices every saved result by ~+21.6 % of charges.
+  - 2026-10-24 update: the dated STT portion is implemented, checked and in the rebuilt stack; automatic rates follow the sale date, explicit saved rates remain pinned, and no saved result was rewritten. Exchange-fee verification/change remains open. The earlier aggregate repricing estimate is not the behavior of this fix.
 - [x] ~~Spun-off task: live guard slow-cycle starvation under continuous ticks (REAL-MONEY; reproduced).~~
   **Fixed and pushed to `origin/main` 2026-10-07** (CHANGELOG "Live guard: the slow cycle no longer
   starves"). The slow-cycle deadline is fixed and a tick no longer moves it. Pinned by
   `TestSlowCycleUnderLiveFeed`.
-  - [ ] **Operator:** in the main checkout, `git merge --ff-only origin/main`, then `docker compose up -d --build`
-    with NO live position open. Until that rebuild the running backend still has the starving loop.
+  - [x] ~~Operator: merge and rebuild with no live position open.~~ Completed 2026-10-24 after explicit approval/flat-account confirmation; running guard source matches the corrected checkout. No new merge was needed for this existing local fix.
 - [ ] Spun-off task: live-path integrity (non-200 PlaceOrder as indeterminate, 40/min order budget, freeze 3,510,
   holiday gaps 2026-10-20 / 11-10 / 11-24, `REJECT` spelling in `order_sm`).
 - [x] Tape preservation: 3,201,938 depth ticks archived to `tick_archive` on 2026-10-06; daily archive loop (default on).
@@ -753,29 +850,6 @@ promotion-grade result.
 - **Deriving anything at capture time.** PCR, max pain and OI walls are all
   recomputable from a faithful snapshot; a derived value stored today freezes today's
   definition into a record that cannot be re-derived.
-
-### Terminal upgrade — deployed locally 2026-11-05
-
-- [x] Item 1: shared conditional chart trading and blotter; isolated paper fill,
-  P&L, confirmed drag and cancellation passed. Commits 9894d7d and 398a955.
-- [x] Item 2: all 17 layout variants, active context, shared stream recovery,
-  maximize/search and isolated restart persistence passed. Commit 0548405.
-- [x] Item 3: Mongo watchlist + quote ownership backend committed 4ddacbe;
-  41 selected backend and 20 frontend checks pass. Chrome add/edit/reorder/delete
-  survived isolated process restart with identical Mongo response digest.
-- [x] Item 4: option chain implemented/tested and integrated into local main 68d5acb.
-  Real read-only chain schema and isolated Chrome updates passed; market-hours
-  acceptance remains pending. See chart-terminal/option-chain-acceptance.md.
-- [x] Item 5: research overlays, forecast journal/scoring and two read-only strategy
-  previews integrated at f8b6823. Clean tests/build, Chrome + Mongo, and a real
-  NIFTY forward forecast checked; see chart-terminal/analysis-acceptance.md.
-- [x] Item 6: review-only ranked proposals in ../FEATURE_PROPOSALS.md. None built.
-- [x] Local rollout: deployed cac2f8f, source fingerprint matches across the app.
-  Two-tab Chrome acceptance for both option chains, full screen and order types
-  passed. Watchlist edits survived actual recreation and the normal launcher.
-  See [rollout checks](chart-terminal/rollout-acceptance.md) and [progress](../PROGRESS.md).
-- [ ] Operator: compare moving prices on the deployed screen during the next
-  session. Actual real-order acceptance remains exclusively the user's check.
 
 
 ### Chart display and watchlist request - 2026-11-18

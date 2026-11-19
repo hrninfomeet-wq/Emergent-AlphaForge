@@ -1,0 +1,40 @@
+{
+  "backend_source_matches": {
+    "backend/app/live/broker_protocol.py": true,
+    "backend/app/live/close_loop.py": true,
+    "backend/app/live/executor.py": true,
+    "backend/app/live/flattrade_symbol.py": true,
+    "backend/app/live/kill_switch.py": true,
+    "backend/app/live/live_position_guard.py": true,
+    "backend/app/live/manual_ticket.py": true,
+    "backend/app/live/order_builder.py": true,
+    "backend/app/live_friction.py": true,
+    "backend/app/option_backtest.py": true,
+    "backend/app/option_costs.py": true,
+    "backend/app/paper_auto.py": true,
+    "backend/app/premium_momentum.py": true,
+    "backend/app/routers/deployments.py": true,
+    "backend/app/routers/live_broker.py": true
+  },
+  "frontend_source_matches": {
+    "frontend/src/components/live/LiveOrderTicket.jsx": true,
+    "frontend/src/lib/api.js": true,
+    "frontend/src/lib/backtestDeploySource.js": true,
+    "frontend/src/lib/manualTicket.js": true,
+    "frontend/src/lib/optimizerBoundAudit.js": true,
+    "frontend/src/pages/LiveSignals.jsx": true,
+    "frontend/src/pages/Optimizer.jsx": true,
+    "frontend/src/pages/PaperTrading.jsx": true
+  },
+  "served_bundle": "/static/js/main.d7598c8d.js",
+  "served_bundle_sha256": "a2ea227a5b8500e07efb0e7af67e0632f2bb92b8035c6c002ca2ce75dfff146a",
+  "bundle_checks": {
+    "paper_only_api_in_bundle": true,
+    "partial_failure_message_in_bundle": true,
+    "manual_capability_message_in_bundle": true
+  },
+  "running_images": {
+    "backend": "sha256:4677a582afbfb7025170341357462d72c0a82571f1ea449eb9447ac49d12988c",
+    "frontend": "sha256:16030a060d939bde3e10682baa919dc31efa317d90ab93e49047723217f875c0"
+  }
+}

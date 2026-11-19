@@ -861,6 +861,7 @@ def simulate_paired_option_trades(
             exit_premium=exit_price,
             quantity=quantity,
             cfg=cost_cfg,
+            exit_ts=exit_candle_ts,
         ) if cost_cfg.enabled else None
         total_charges = float(charges["total_charges"]) if charges else 0.0
         pnl_value = round(gross_pnl_value - total_charges, 2)

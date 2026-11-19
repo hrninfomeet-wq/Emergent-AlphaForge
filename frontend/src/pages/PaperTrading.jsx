@@ -496,9 +496,17 @@ export default function PaperTrading() {
   const doStopAll = async () => {
     const offHours = (livePos.items || []).length === 0;
     const warn = offHours ? "\n\nMarket looks closed — open positions will close at an ESTIMATED price." : "";
-    if (!window.confirm(`Stop ALL paper trading? Squares off every open position and pauses all active strategies.${warn}`)) return;
+    if (!window.confirm(`Stop ALL paper trading? Closes paper positions and pauses paper/signal-only strategies. Live deployments are unaffected.${warn}`)) return;
     setBusy(true);
-    try { const r = await api.stopAllDeployments(); toast.success(`Stopped all · squared off ${r.squared_off_count ?? 0} · paused ${r.paused_deployment_ids?.length ?? 0}`); await refreshAll(); }
+    try {
+      const r = await api.stopAllPaperDeployments();
+      const failed = r.failed?.length ?? 0;
+      const skipped = r.skipped?.length ?? 0;
+      const message = `Paper stop · closed ${r.squared_off_count ?? 0} · paused ${r.paused_deployment_ids?.length ?? 0}`;
+      if (failed || skipped) toast.warning(`${message} · failed ${failed} · skipped ${skipped}. Review the remaining paper positions.`);
+      else toast.success(message);
+      await refreshAll();
+    }
     catch (e) { toast.error(e.response?.data?.detail || e.message); }
     finally { setBusy(false); }
   };

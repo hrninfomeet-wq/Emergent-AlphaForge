@@ -287,7 +287,7 @@ export default function LiveCockpit() {
       {/* Tabbed account panel */}
       <AccountTabs
         limits={limits} orders={orders} blotter={blotter} gtt={gtt}
-        holdings={holdings} errors={errors}
+        holdings={holdings} errors={errors} ordersReadAt={lastSuccess?.orders}
       />
 
       <ConfigDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />

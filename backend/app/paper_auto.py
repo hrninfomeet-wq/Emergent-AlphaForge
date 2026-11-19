@@ -221,6 +221,7 @@ def _attach_execution_surface_evidence(
         charges = round_trip_charges(
             entry_premium=entry_ask, exit_premium=exit_bid,
             quantity=quantity, cfg=CostConfig(enabled=True),
+            exit_ts=closed.get("closed_at"),
         )
         touch_pnl = round((exit_bid - entry_ask) * quantity - charges["total_charges"], 2)
         closed["execution_realized_pnl"] = touch_pnl

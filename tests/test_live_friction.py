@@ -119,7 +119,7 @@ def test_close_economics_disabled_keeps_gross_but_reports_statutory_charges():
     assert econ["charges"] is not None and econ["total_charges"] > 0.0
     # statutory math, zero brokerage: matches option_costs on the raw fills
     expected = round_trip_charges(entry_premium=100.0, exit_premium=120.0,
-                                  quantity=75, cfg=CostConfig(enabled=True))
+                                  quantity=75, cfg=CostConfig(enabled=True), exit_ts=TS)
     assert econ["total_charges"] == round(float(expected["total_charges"]), 2)
     assert econ["net_realized_pnl"] == round(econ["gross_realized_pnl"] - econ["total_charges"], 2)
 
@@ -157,7 +157,7 @@ def test_sim_live_net_pnl_parity():
     sim_exit_fill = fill_premium(raw_premium=raw_exit, side="SELL", moneyness=f.moneyness, ts_ms=TS,
                                  expiry_iso=f.expiry_iso, slippage_cfg=f.slippage, cost_cfg=f.costs)["price"]
     sim_charges = round_trip_charges(entry_premium=entry_fill, exit_premium=sim_exit_fill,
-                                     quantity=qty, cfg=f.costs)["total_charges"]
+                                     quantity=qty, cfg=f.costs, exit_ts=TS)["total_charges"]
     sim_net = round((sim_exit_fill - entry_fill) * qty - sim_charges, 2)
 
     # --- what the live path does ---

@@ -1,0 +1,122 @@
+--- before/backend/app/live/idempotency.py
++++ after/backend/app/live/idempotency.py
+@@ -121,8 +121,9 @@
+     `FakeAsyncCollection`.
+     """
+ 
+-    def __init__(self, collection: Any) -> None:
++    def __init__(self, collection: Any, receipt_collection: Any = None) -> None:
+         self._col = collection
++        self._receipt_col = receipt_collection
+ 
+     # ------------------------------------------------------------------
+     # record_intent — write BEFORE any broker POST
+@@ -312,6 +313,7 @@
+         )
+ 
+         if result.matched_count == 1:
++            self._capture_submitted(client_order_id)
+             return  # success
+ 
+         # matched_count == 0 — no doc with norenordno=None matched.
+@@ -329,6 +331,7 @@
+ 
+         # F4: idempotent retry — same norenordno means the call already succeeded
+         if existing_nord == norenordno:
++            self._capture_submitted(client_order_id)
+             return  # no-op success
+ 
+         # F3: doc exists but has a DIFFERENT norenordno → refuse to overwrite
+@@ -337,6 +340,15 @@
+             f"norenordno={existing_nord!r}. "
+             f"Refusing to overwrite with {norenordno!r}."
+         )
++
++    def _capture_submitted(self, client_order_id):
++        # Evidence cannot delay or fail the executor after its broker ACK.
++        if self._receipt_col is not None:
++            from app.live import receipt_capture
++            try:
++                receipt_capture.submitted(self._col, self._receipt_col, client_order_id)
++            except Exception:
++                receipt_capture.failure()
+ 
+     # ------------------------------------------------------------------
+     # resume_unsubmitted — startup reconciliation
+@@ -400,4 +412,5 @@
+     """
+     from app.db import get_db  # type: ignore[import]
+ 
+-    return IntentStore(get_db().live_orders)
++    db = get_db()
++    return IntentStore(db.live_orders, db.execution_receipt_events)
+--- before/backend/app/routers/live_broker.py
++++ after/backend/app/routers/live_broker.py
+@@ -54,7 +54,7 @@
+ from pydantic import BaseModel, StrictBool
+ from typing import Literal as _Literal
+ 
+-from app.live import flattrade_token
++from app.live import flattrade_token, receipt_capture
+ from app.live.flattrade_token import (
+     DEFAULT_USER_ID,
+     build_login_url,
+@@ -709,6 +709,7 @@
+         raise HTTPException(400, f"Could not build Flattrade client: {exc}") from exc
+     try:
+         orders = await client.order_book()
++        receipt_capture.observe_book(orders)
+         return {"orders": orders, "count": len(orders)}
+     except BrokerReadError as exc:
+         raise _broker_read_400(exc, "order_book") from exc
+@@ -728,6 +729,7 @@
+         raise HTTPException(400, f"Could not build Flattrade client: {exc}") from exc
+     try:
+         trades = await client.trade_book()
++        receipt_capture.observe_book(trades, trades=True)
+         return {"trades": trades, "count": len(trades)}
+     except BrokerReadError as exc:
+         raise _broker_read_400(exc, "trade_book") from exc
+@@ -1426,6 +1428,8 @@
+             or not same_approved_entry(approved_children[0], approved_children[0])):
+         return {**_not_placed("Approved order snapshot missing; preview and approve again."), "retryable": False}
+ 
++    receipt_capture.approval_decided(approval_id, approved_children[0])
++
+     contract = {
+         "underlying": ticket.get("underlying"),
+         "strike": ticket.get("strike"),
+@@ -1443,6 +1447,9 @@
+         result = await _place_manual_order(place_body, approved_entry=approved_children[0])
+     except HTTPException as exc:
+         return _not_placed(f"placement blocked: {exc.detail}")
++
++    if isinstance(result, dict) and (result.get("cid") or result.get("norenordno")):
++        receipt_capture.approval_decided(approval_id, approved_children[0], result)
+ 
+     if isinstance(result, dict) and result.get("placed"):
+         store.mark_consumed(approval_id, now)
+--- before/backend/server.py
++++ after/backend/server.py
+@@ -70,6 +70,8 @@
+     if fernet_warning:
+         log.warning(fernet_warning)
+     await ensure_indexes()
++    from app.live.receipt_capture import initialize as initialize_receipts
++    await initialize_receipts(get_db().execution_receipt_events)
+     registry = get_registry()
+     registry.auto_discover()
+     log.info(f"Discovered {len(registry.list_all())} strategy plugins")
+--- before/backend/app/live/execution_receipts.py
++++ after/backend/app/live/execution_receipts.py
+@@ -144,5 +144,9 @@
+     orders = await db.live_orders.find({}, {"_id": 0}).sort("ts_intent", -1).skip(skip).to_list(length=limit)
+     ids = list({str(o["norenordno"]) for o in orders if o.get("norenordno")})
+     journals = await db.live_trades.find({"norenordno": {"$in": ids}}, {"_id": 0}).to_list(length=None) if ids else []
+-    return {"items": [execution_receipt(o, journals, guards) for o in orders],
++    from app.live.receipt_evidence import attach_evidence
++    from app.live.receipt_capture import capture_status
++    items = [execution_receipt(o, journals, guards) for o in orders]
++    await attach_evidence(db, orders, items)
++    return {"items": items, "capture_status": capture_status(),
+             "total": await db.live_orders.count_documents({}), "limit": limit, "skip": skip}

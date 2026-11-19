@@ -186,6 +186,8 @@ export const api = {
     apiClient.get("/paper/deployment-stats", { params: { deployment_id: deploymentId } }).then((r) => r.data),
   putPaperCaps: (deploymentId, caps) =>
     apiClient.put(`/deployments/${deploymentId}/paper-caps`, caps).then((r) => r.data),
+  executionReceipts: (limit = 50, skip = 0) =>
+    apiClient.get("/live-broker/execution-receipts", { params: { limit, skip } }).then((r) => r.data),
   liveTradeStats: () =>
     apiClient.get("/live-broker/trade-stats").then((r) => r.data),
   liveTradeHistory: (limit = 100, skip = 0, status = "") =>
@@ -234,6 +236,8 @@ export const api = {
     apiClient.post(`/deployments/${id}/resume`).then((r) => r.data),
   stopDeployment: (id) =>
     apiClient.post(`/deployments/${id}/stop`).then((r) => r.data),
+  stopAllPaperDeployments: () =>
+    apiClient.post("/deployments/paper/stop-all").then((r) => r.data),
   stopAllDeployments: () =>
     apiClient.post("/deployments/stop-all").then((r) => r.data),
   repinDeploymentSource: (id) =>
