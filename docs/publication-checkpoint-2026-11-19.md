@@ -52,3 +52,12 @@ python -m pytest tests/test_build_identity.py tests/test_execution_receipts.py t
 Final gate: fetch and push main normally, then compare remote/main and local/main
 commit IDs and confirm a clean worktree. If rejected by newer remote work, preserve
 both histories and reconcile before retrying.
+
+## Publication result
+
+Confirmed: consolidation commit `7f5e05a` was committed locally and pushed to
+GitHub main without force. `git ls-remote origin refs/heads/main` matched local
+main's full commit ID. Worktree was clean before saving this completion note.
+The running app was not rebuilt. Python failures above remain open. Historical
+patch/diff snapshots retain their original context whitespace, and source CSVs
+retain trailing blank rows; the whitespace check reports these evidence files.

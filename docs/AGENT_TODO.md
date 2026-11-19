@@ -16,7 +16,8 @@
   tests and supporting records reviewed for publication. No deployment or orders.
 - [x] Selected verification: 410 Python passed, 8 failed; 47 React and 34 Node
   passed. Failures and commands: publication-checkpoint-2026-11-19.md.
-- [ ] Final gate: verify GitHub main equals local main after the authorized push.
+- [x] Consolidation commit 7f5e05a pushed normally; GitHub main and local main
+  match via ls-remote. Working tree clean before this completion-note update.
 
 ### Terminal upgrade — deployed locally 2026-11-05
 

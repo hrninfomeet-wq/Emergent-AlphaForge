@@ -5,7 +5,9 @@
 User authorized committing all outstanding project work to local main and pushing
 to GitHub. Source/evidence scan is complete; credentials, caches and local build
 output remain excluded. Publication checks and known failures are recorded in
-docs/publication-checkpoint-2026-11-19.md. Git push verification is the final gate.
+docs/publication-checkpoint-2026-11-19.md. Consolidation commit 7f5e05a was
+pushed to GitHub main and its full commit ID matched local main via ls-remote.
+Credentials and ignored local artifacts were excluded. No deployment or orders.
 
 ## Completed: individual chart full screen, November 19
 
